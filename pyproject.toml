@@ -111,7 +111,10 @@ ignore = [
 "tests/fakes/*" = ["ARG002", "ASYNC109"]
 # An operational script, not library code: it prints (that is its output), it exits
 # non-zero (that is its contract), and it talks to a real server over real HTTP.
-"scripts/*" = ["T20", "S310", "PLR0915"]
+# PLR2004: a smoke test asserts on literal status codes on purpose -- `== 201` is the
+# thing being checked, and naming it CREATED would put one indirection between the
+# reader and the contract they are here to verify.
+"scripts/*" = ["T20", "S310", "PLR0915", "PLR2004"]
 "tests/**" = [
     "S101",    # asserts are the point
     "S105",    # test corpora contain literal credential-shaped strings on purpose

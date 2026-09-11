@@ -15,6 +15,7 @@ venv/
 .coverage.*
 coverage.xml
 htmlcov/
+*,cover
 
 # Runtime state (the persona database)
 var/
