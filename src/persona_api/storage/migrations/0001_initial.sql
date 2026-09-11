@@ -135,6 +135,28 @@ CREATE TABLE notes (
 CREATE VIRTUAL TABLE fields_fts USING fts5(text, tokenize='porter unicode61');
 CREATE VIRTUAL TABLE notes_fts  USING fts5(text, tokenize='porter unicode61');
 
+-- ...except for the one thing a store cannot reach: a CASCADE.
+--
+-- Deleting a persona removes its fields and notes through the foreign key above, and a
+-- foreign key has no application code path to hook. Without these triggers the rows go
+-- and every word of them stays in the index -- so a deleted persona would still be
+-- findable by search, and the docid would later be handed to a different row.
+--
+-- That is not a contradiction of the "no triggers" rule above. That rule is about
+-- *building* the index, which needs a JSON value rendered to readable text and
+-- therefore belongs in Python where it can be unit-tested. This is only teardown: one
+-- DELETE keyed on a column the row already carries, with nothing to render and nothing
+-- to get subtly wrong.
+--
+-- Found by the index-integrity tests, which is what that test class is for.
+CREATE TRIGGER fields_fts_after_delete AFTER DELETE ON fields BEGIN
+    DELETE FROM fields_fts WHERE rowid = OLD.seq;
+END;
+
+CREATE TRIGGER notes_fts_after_delete AFTER DELETE ON notes BEGIN
+    DELETE FROM notes_fts WHERE rowid = OLD.seq;
+END;
+
 -- The change log. No foreign keys, on purpose.
 --
 -- Deleting a persona must not delete the record that it was deleted. account_id and

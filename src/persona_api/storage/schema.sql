@@ -94,3 +94,9 @@ CREATE TABLE schema_version (
 ) STRICT
 ;
 CREATE TABLE sqlite_sequence(name,seq);
+CREATE TRIGGER fields_fts_after_delete AFTER DELETE ON fields BEGIN
+    DELETE FROM fields_fts WHERE rowid = OLD.seq;
+END;
+CREATE TRIGGER notes_fts_after_delete AFTER DELETE ON notes BEGIN
+    DELETE FROM notes_fts WHERE rowid = OLD.seq;
+END;
