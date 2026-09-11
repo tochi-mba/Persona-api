@@ -25,9 +25,9 @@ The verification mirrors keyring's own `signing.py:113-135` precisely:
 ```python
 jwt.decode(
     token,
-    key,                          # from the JWKS, matched on the header's kid
-    algorithms=["RS256"],         # a fixed list. Never read alg from the token.
-    audience=settings.audience,   # "persona"
+    key,  # from the JWKS, matched on the header's kid
+    algorithms=["RS256"],  # a fixed list. Never read alg from the token.
+    audience=settings.audience,  # "persona"
     issuer=settings.keyring_issuer,
     options={"require": ["exp", "iat", "iss", "sub", "aud"], "verify_exp": False},
 )
