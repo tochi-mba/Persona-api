@@ -48,6 +48,7 @@ from persona_api.domain.errors import (
     NoteNotFoundError,
     PersonaExistsError,
     PersonaNotFoundError,
+    PreferencesUnavailableError,
 )
 
 if TYPE_CHECKING:
@@ -76,6 +77,10 @@ _DOMAIN_STATUS: dict[type[Exception], int] = {
     # Not 401. Nothing is wrong with the caller's token; keyring is not answering, and
     # sending them to re-authenticate over it would be advice they cannot act on.
     KeyringUnreachableError: status.HTTP_503_SERVICE_UNAVAILABLE,
+    # settings-api refusing this service is a misconfiguration of this service, so it is
+    # not usable rather than the caller being unwelcome. The body is fixed text: the
+    # exception that caused it names grants and must not reach the caller.
+    PreferencesUnavailableError: status.HTTP_503_SERVICE_UNAVAILABLE,
     InvalidProfileError: status.HTTP_422_UNPROCESSABLE_CONTENT,
     InvalidFieldKeyError: status.HTTP_422_UNPROCESSABLE_CONTENT,
     InvalidFieldValueError: status.HTTP_422_UNPROCESSABLE_CONTENT,

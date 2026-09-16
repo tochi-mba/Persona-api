@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 OPERATION_IDS = {
     # health
     "get_health",
+    "check_readiness",
     # personas
     "list_personas",
     "create_persona",
@@ -201,6 +202,9 @@ class TestHealthIsTheOnlyUnauthenticatedRoute:
     async def test_health_needs_no_token(self, client: AsyncClient) -> None:
         assert (await client.get("/healthy")).status_code == 200
 
+    async def test_readiness_needs_no_token(self, client: AsyncClient) -> None:
+        assert (await client.get("/ready")).status_code == 200
+
     @pytest.mark.parametrize(
         "path",
         [
@@ -233,7 +237,7 @@ class TestHealthIsTheOnlyUnauthenticatedRoute:
             headers=auth(token_for(keyring)),
         )
 
-        body = (await client.get("/healthy")).text
+        body = (await client.get("/ready")).text
 
         assert "distinctive" not in body
         assert "work" not in body

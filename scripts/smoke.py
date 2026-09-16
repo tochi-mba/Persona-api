@@ -10,7 +10,7 @@ with a mistyped `PERSONA_KEYRING_ISSUER` looks exactly like a green `make check`
 
 Usage:
 
-    # keyring on :8001 with KEYRING_SERVICE_TOKENS='{"persona": "..."}'
+    # keyring on :8001, which needs no configuration for persona-api
     # persona-api on :8099 with PERSONA_KEYRING_ISSUER matching keyring's issuer
     KEYRING_URL=http://127.0.0.1:8001 \\
     PERSONA_URL=http://127.0.0.1:8099 \\
@@ -70,8 +70,10 @@ def session_token(client: httpx.Client, email: str, password: str) -> str:
 def service_token(client: httpx.Client, session: str) -> str:
     """Exchange a keyring session for a token minted for this service.
 
-    The step most likely to be misconfigured: keyring must have "persona" in its
-    KEYRING_SERVICE_TOKENS, or it will refuse to mint for that audience at all.
+    keyring mints for any audience it is asked for, so a refusal here is about the session
+    rather than keyring's configuration. persona-api needs no entry in keyring's
+    KEYRING_SERVICE_TOKENS: that only admits services to keyring's /v1/internal endpoints,
+    which this service never calls.
     """
     response = client.post(
         f"{KEYRING_URL}/v1/auth/service-token",
@@ -81,7 +83,7 @@ def service_token(client: httpx.Client, session: str) -> str:
     if response.status_code != 200:
         fatal(
             "keyring would not mint a token for audience 'persona' "
-            f"({response.status_code}); is 'persona' in KEYRING_SERVICE_TOKENS?"
+            f"({response.status_code}); is the keyring session still valid?"
         )
     token: str = response.json()["token"]
     return token

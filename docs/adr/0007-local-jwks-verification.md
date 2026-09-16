@@ -1,6 +1,6 @@
 # ADR-0007: Verify keyring's tokens locally, not by asking keyring
 
-**Status:** accepted. Inherits the trade in
+**Status:** accepted; implementation updated 2026-09-15 (see the end). Inherits the trade in
 [keyring's ADR-0008](https://github.com/tochi-mba/Keyring-api/blob/main/docs/adr/0008-opaque-sessions-signed-service-tokens.md).
 
 ## Context
@@ -89,3 +89,30 @@ anyone notices.
 keyring gaining real key rotation, or a revocation list worth consulting. Neither changes
 the local-verification decision; both would change what the JWKS client does between
 fetches.
+
+## Update, 2026-09-15: the verification now comes from `keyring-client`
+
+The decision stands: persona-api verifies keyring's tokens locally and never calls keyring at
+request time. What changed is where the code lives. The JWKS client and verifier this ADR
+describes were replaced by `keyring_client` (`Keyring-api/clients/python`), the one
+implementation every service in the family shares, and are tested once, in the keyring
+repository, against keyring's own signer. `persona_api.auth` is now an adapter: it pins the
+audience to exactly `persona` and turns the library's verdicts into this service's
+`AuthenticationError` (401) and `KeyringUnreachableError` (503).
+
+The rules for a token are the ones above, with three differences: a list `aud`, an empty
+`sub` or a non-numeric `exp` is refused, and `iat` is no longer checked against the wall
+clock. Three rules about keys changed with the library:
+
+- **A `kid` missing from a key set keyring has just served is a 401.** Keyring answered, and
+  its answer is a fact about the token; this service used to answer 503. A fetch that fails
+  is still a 503.
+- **A failed fetch is not retried within `jwks_min_refetch_seconds`**, the floor an unknown
+  `kid` already had, so a keyring that is down is not asked once per inbound request.
+- **Keys held from a successful fetch are served through an outage** for up to a day past
+  `jwks_cache_seconds`. `/healthy` fetches when it holds nothing fresh, and reports an outage
+  survived on cached keys as `ok` with `reachable: false` rather than taking a working
+  instance out of rotation.
+
+The import-linter contract now forbids `keyring_client` outside `persona_api.auth`, as well
+as `jwt` and `httpx`.

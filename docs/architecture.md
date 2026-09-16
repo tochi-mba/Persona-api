@@ -1,6 +1,6 @@
 # Architecture
 
-One process, one SQLite file, seven layers pointing inward, and four import-linter
+One process, one SQLite file, seven layers pointing inward, and five import-linter
 contracts that refuse a commit which breaks the shape. If you are here to change
 something, read [AGENTS.md](../AGENTS.md) first — this document explains *why* the shape
 is what it is; that one explains how to work inside it.
@@ -9,13 +9,13 @@ is what it is; that one explains how to work inside it.
 
 ```
 src/persona_api/
-  core/      config, clock, logging, request context, version, the composition root
+  core/      config, clock, logging, request context, version, preferences, the composition root
   domain/    pure types and rules. Imports nothing internal — not even core.
   storage/   the SQLite connection, the migrations, how a datetime becomes a column
   events/    the append-only record of persona changes
   memory/    FieldStore, NoteStore, the FTS index, recall, filters, cursor pagination
   personas/  PersonaStore and PersonaService — the identity card and the cascade
-  auth/      the keyring JWKS client and token verification
+  auth/      token verification: a thin adapter over the family's keyring_client
   api/       FastAPI app, routers, wire schemas, problem+json errors, middleware
 ```
 
@@ -29,10 +29,10 @@ This is keyring's architecture, deliberately. The two services are meant to be r
 the same person on the same afternoon, and the second one being shaped differently for no
 reason would be a cost paid by every future reader.
 
-## The four contracts
+## The five contracts
 
-They are enforced by `lint-imports`, which runs inside `make check`. There are four, all
-earned. **There is deliberately not a fifth for symmetry with keyring.**
+They are enforced by `lint-imports`, which runs inside `make check`. There are five, each
+earned.
 
 **1. Layers point inward.** The list above, in order.
 
@@ -49,18 +49,30 @@ will eventually contain one — and the first one will be the one that forgets t
 `account_id` in the `WHERE` clause.
 
 **4. Talking to keyring stays behind the auth adapter.** Nothing outside
-`persona_api.auth` may import `jwt` or `httpx`. This is the one worth explaining.
+`persona_api.auth` may import `keyring_client`, `jwt` or `httpx`, except `core.config`,
+which validates `PERSONA_SETTINGS_API_TOKEN` with `keyring_client.check_service_token`
+rather than a copy of the 32-character rule.
 
 persona-api's entire relationship with keyring is "verify this signed token against those
-published keys". That is a small thing, and it should stay small. The contract keeps every
-question this service asks of keyring, and every rule by which it believes an answer,
-inside one module that can be read in a sitting.
+published keys". That is a small thing, and it should stay small. The rules for it are the
+family's, in `keyring_client`; the contract keeps every question this service asks of
+keyring, and every rule by which it believes an answer, behind one package that can be read
+in a sitting. `keyring_client` is named alongside `httpx` because the same library carries a
+client for keyring's internal credential endpoints, which this service has no reason to
+call — and importing it is one line.
 
 Without it, the failure is predictable: somebody needs a fact keyring holds — a display
-name, a profile list, whether an account is disabled — and an `httpx` call appears in a
-router. It works. It is reviewed and merged. And the boundary that made
-[ADR-0007](adr/0007-local-jwks-verification.md) a bounded decision is gone before anyone
-notices, replaced by a service that is unavailable whenever keyring is.
+name, a profile list, whether an account is disabled — and an `httpx` call or a
+`keyring_client` import appears in a router. It works. It is reviewed and merged. And the
+boundary that made [ADR-0007](adr/0007-local-jwks-verification.md) a bounded decision is
+gone before anyone notices, replaced by a service that is unavailable whenever keyring is.
+
+**5. Talking to settings-api stays behind the preferences module.** Nothing but
+`persona_api.core.preferences` may import `settings_client`. The container constructs the
+source through `build_preference_source`. The client owns caching, revalidation,
+single-flight and outage behaviour; a call site that imported it would re-implement those
+four, slightly wrong, and would present a user token without the one module that knows how
+to degrade.
 
 ## What each layer is for
 
@@ -142,13 +154,26 @@ turning this into a system-prompt string is the MCP layer's job, and baking a pr
 template into the API would freeze it and put presentation in the wrong service. See
 [docs/mcp.md](mcp.md).
 
-### `auth/` — the only module that knows keyring exists
+### `auth/` — the only package that knows keyring exists
 
-`jwks.py` and `verifier.py`. [ADR-0007](adr/0007-local-jwks-verification.md) covers the
-decision; the module docstrings cover the mechanics. The one piece of it that is not
-obvious from the outside: an unknown `kid` triggers a refetch, **rate-limited to one per
-`jwks_min_refetch_seconds`**, because without the limit a stream of tokens with random
-kids is an outbound-fetch amplifier pointed at keyring.
+`jwks.py` and `verifier.py`, and both are thin. The rules by which a token is believed —
+RS256 only, the issuer pinned, every claim required, expiry on the injected clock — and every
+rule about fetching keyring's keys are the family's, in `keyring_client`: shared by every
+service, and tested against keyring's own signer in the keyring repository.
+[ADR-0007](adr/0007-local-jwks-verification.md) covers the decision.
+
+What is left here is what only this service decides. The audience is **exactly** `persona`,
+not a family, because this service has no compartments. And the library's verdicts become
+this service's own errors, so nothing above `auth` knows a library was involved: every
+refusal is `AuthenticationError` and one identical 401; keys that cannot be fetched, with no
+usable copy held, are `KeyringUnreachableError` and a 503.
+
+Two pieces of the library's behaviour are not obvious from the outside. An unknown `kid`
+triggers a refetch **rate-limited to one per `jwks_min_refetch_seconds`**, because without the
+limit a stream of tokens with random kids is an outbound-fetch amplifier pointed at keyring —
+and a `kid` missing from a key set keyring has just served is a 401, not an outage. And keys
+from a good fetch are served through a keyring outage for up to a day, which is why
+`/ready` can report keyring unreachable while reporting itself ok.
 
 ### `api/` — thin on purpose
 

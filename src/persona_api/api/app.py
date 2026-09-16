@@ -7,7 +7,7 @@ settings, and nothing is constructed as a side effect of importing this module.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from fastapi import FastAPI
 
@@ -20,7 +20,7 @@ from persona_api.core.logging import configure_logging, get_logger
 from persona_api.core.version import service_version
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Callable
 
 logger = get_logger(__name__)
 
@@ -57,12 +57,18 @@ There is no setting that disables it.
 """.strip()
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    *,
+    container_factory: Callable[[Settings], Container] | None = None,
+) -> FastAPI:
     """Build the application.
 
     Args:
         settings: configuration to use. Loaded from the environment when omitted, which
             is what the server entry point does; tests pass their own.
+        container_factory: substituted by tests that wire a fake settings-api. Production
+            uses :meth:`Container.build`.
     """
     settings = settings or load_settings()
     configure_logging(level=settings.log_level, log_format=settings.log_format)
@@ -86,6 +92,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ],
     )
     app.state.settings = settings
+    app.state.container_factory = container_factory or Container.build
 
     app.add_middleware(RequestContextMiddleware)
     register_exception_handlers(app)
@@ -109,11 +116,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 def start(app: FastAPI) -> Container:
     """Wire the application's dependencies.
 
-    Deliberately does not contact keyring. The first token that needs a verifying key is
-    what provokes the first fetch -- a persona service that will not start because
-    keyring is down is a persona service that cannot report keyring being down.
+    Deliberately does not contact keyring. The first token that needs a verifying key, or
+    the first health check, is what provokes the first fetch -- a persona service that will
+    not start because keyring is down is a persona service that cannot report keyring being
+    down.
     """
-    container = Container.build(app.state.settings)
+    factory = cast("Callable[[Settings], Container]", app.state.container_factory)
+    container = factory(app.state.settings)
     app.state.container = container
 
     logger.info("service_started", environment=container.settings.environment)

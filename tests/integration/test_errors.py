@@ -18,14 +18,14 @@ if TYPE_CHECKING:
 
     from persona_api.core.config import Settings
     from tests.fakes.clock import FakeClock
-    from tests.fakes.keyring import FakeJwksEndpoint, FakeKeyring
+    from tests.fakes.keyring import FakeKeyring
 
 SECRET_ISH = "/var/lib/persona/persona.db and the key sk-live-abcdef"
 
 
 @pytest.fixture
 async def exploding(
-    settings: Settings, endpoint: FakeJwksEndpoint, clock: FakeClock
+    settings: Settings, keyring: FakeKeyring, clock: FakeClock
 ) -> AsyncIterator[AsyncClient]:
     """An app with one route that raises, to exercise the unhandled-error path.
 
@@ -46,7 +46,7 @@ async def exploding(
         LifespanManager(app) as managed,
         AsyncClient(transport=ASGITransport(app=managed.app), base_url="http://p.test") as http,
     ):
-        wire_fake_keyring(app, endpoint, clock)
+        wire_fake_keyring(app, keyring, clock)
         yield http
 
 

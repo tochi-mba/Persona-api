@@ -89,6 +89,7 @@ async def set_field(
     value: object = "dry and concise",
     source: Source = Source.ASSISTANT,
     pinned: bool | None = None,
+    max_pinned: int | None = None,
 ) -> Field:
     return await store.set(
         account_id=account_id,
@@ -99,6 +100,7 @@ async def set_field(
         source=source,
         asserted_by=ASSERTED_BY,
         pinned=pinned,
+        max_pinned=max_pinned,
     )
 
 
@@ -111,6 +113,7 @@ async def write_note(
     kind: NoteKind = NoteKind.EPISODE,
     source: Source = Source.ASSISTANT,
     pinned: bool = False,
+    max_pinned: int | None = None,
 ) -> Note:
     return await store.write(
         account_id=account_id,
@@ -120,4 +123,5 @@ async def write_note(
         source=source,
         asserted_by=ASSERTED_BY,
         pinned=pinned,
+        max_pinned=max_pinned,
     )

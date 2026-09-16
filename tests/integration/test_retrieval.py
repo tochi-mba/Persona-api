@@ -6,12 +6,16 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from tests.conftest import build_settings
 from tests.integration.conftest import auth, token_for
 from tests.unit.memory.test_search import HOSTILE
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from httpx import AsyncClient
 
+    from persona_api.core.config import Settings
     from tests.fakes.keyring import FakeKeyring
 
 
@@ -184,6 +188,37 @@ class TestPaging:
         response = await client.get("/v1/personas/work/notes?limit=500", headers=auth(token))
 
         assert response.status_code == 422
+
+
+@pytest.mark.usefixtures("furnished")
+class TestPageSizesComeFromSettings:
+    """The page size a caller gets is the deployment's, not a literal written into a route."""
+
+    @pytest.fixture
+    def settings(self, tmp_path: Path) -> Settings:
+        return build_settings(tmp_path, recall_default_limit=3, recall_max_limit=5)
+
+    async def test_a_list_without_a_limit_uses_the_configured_default(
+        self, client: AsyncClient, token: str
+    ) -> None:
+        response = await client.get("/v1/personas/work/notes", headers=auth(token))
+
+        assert response.status_code == 200
+        assert len(response.json()["notes"]) == 3
+        assert response.json()["next_cursor"] is not None
+
+    async def test_the_configured_maximum_is_enforced_in_the_usual_shape(
+        self, client: AsyncClient, token: str
+    ) -> None:
+        allowed = await client.get("/v1/personas/work/fields?limit=5", headers=auth(token))
+        refused = await client.get("/v1/personas/work/fields?limit=6", headers=auth(token))
+
+        assert allowed.status_code == 200
+        assert len(allowed.json()["fields"]) == 5
+        assert refused.status_code == 422
+        problem = refused.json()
+        assert problem["type"].endswith("/validation-failed")
+        assert [error["location"] for error in problem["errors"]] == ["query.limit"]
 
 
 @pytest.mark.usefixtures("furnished")

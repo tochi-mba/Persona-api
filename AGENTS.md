@@ -33,7 +33,7 @@ contract rather than decoration -- see [Invariants](#invariants).
 | `make matrix` | The tests on every Python CI runs. A green `check` is one interpreter's opinion; coverage genuinely differs between versions. Run before pushing. |
 | `make test` | Tests only. |
 | `make fmt` | Format and auto-fix. |
-| `make run` | Serve on :8002 with reload. Docs at `/docs`. |
+| `make run` | Serve on :8004 with reload. Docs at `/docs`. |
 | `make cov` | HTML coverage report in `htmlcov/`. |
 | `make schema` | Regenerate the checked-in schema snapshot after changing a migration. |
 | `make smoke` | End-to-end check against a persona-api already running on :8099. See `scripts/smoke.py`. |
@@ -45,15 +45,15 @@ in a shell chain masks the exit code, which is how a broken commit slips through
 
 ```
 src/persona_api/
-  core/      config, clock, logging, request context, version, and the composition root
+  core/      config, clock, logging, request context, version, preferences, and the composition root
   domain/    pure types and rules: Persona, Field, Note, Source, key normalization,
              value limits, credential refusal. Imports nothing internal.
   storage/   the SQLite connection, the migrations, and how a datetime becomes a column
   events/    the append-only record of persona changes
   memory/    FieldStore, NoteStore, the FTS index, recall, filters, cursor pagination
   personas/  PersonaStore and PersonaService -- the identity card and the cascade
-  auth/      the keyring JWKS client and token verification. The only module that knows
-             keyring exists
+  auth/      token verification: a thin adapter over the family's keyring_client. The only
+             package that knows keyring exists
   api/       FastAPI app, routers, wire schemas, problem+json errors, middleware
 ```
 
@@ -61,7 +61,7 @@ Dependencies point inward:
 `api → auth → personas → memory → events → storage → domain`. `core` is a shared kernel
 everything may use, except `domain`.
 
-Four contracts, all earned. There is no fifth for symmetry:
+Four contracts, all earned, and a fifth for the second remote:
 
 1. **Layers point inward.**
 2. **The domain imports nothing from the rest of the package** -- not even `core`.
@@ -69,9 +69,17 @@ Four contracts, all earned. There is no fifth for symmetry:
    or `sqlite3`. A router that could write a query is a router that will eventually
    contain one.
 4. **Talking to keyring stays behind the auth adapter.** Nothing but `auth` may import
-   `jwt` or `httpx`. This is the one worth explaining: it keeps *everything this service
-   asks of keyring, and every rule by which it believes an answer*, inside one module
-   that can be read in a sitting.
+   `keyring_client`, `jwt` or `httpx`. This is the one worth explaining: it keeps
+   *everything this service asks of keyring, and every rule by which it believes an
+   answer*, inside one package that can be read in a sitting. The rules themselves are the
+   family's, in `keyring_client` -- change them there, never by re-implementing one here.
+   `core.config` is left off that list so it can validate `PERSONA_SETTINGS_API_TOKEN`
+   with `keyring_client.check_service_token` rather than a copy of the 32-character rule.
+5. **Talking to settings-api stays behind the preferences module.** Nothing but
+   `core.preferences` may import `settings_client`. The container constructs the source
+   through that module. Reading the client from a call site would re-implement caching,
+   revalidation, single-flight and outage behaviour, slightly wrong, and would present a
+   user token without the one module that knows how to degrade.
 
 ## Invariants
 
@@ -95,12 +103,12 @@ deliberately and say why in the commit message -- do not work around it.
    claiming otherwise is ignored. [ADR-0004](docs/adr/0004-provenance-is-partly-a-claim.md)
 5. **Cross-account access is 404, never 403.** A 403 confirms the row exists.
 6. **Nothing reads the wall clock directly.** Every component that behaves differently
-   over time takes a `Clock`. This includes JWT expiry -- PyJWT's own `verify_exp` is
-   turned off and the check is done against the injected clock, because otherwise a test
-   could only ever assert that a token minted now is valid now.
-7. **The algorithm list is fixed.** `algorithms=["RS256"]`, never read from the token.
-   `alg: none` and an HS256 token signed with the JWKS public key are both refused, and
-   there is a test for each.
+   over time takes a `Clock`. This includes JWT expiry -- `keyring_client` turns PyJWT's
+   own time checks off and judges expiry against the clock this service injects, because
+   otherwise a test could only ever assert that a token minted now is valid now.
+7. **The algorithm list is fixed.** `algorithms=["RS256"]`, pinned in `keyring_client` and
+   never read from the token. `alg: none` and an HS256 token signed with the JWKS public
+   key are both refused, and this service's own suite has a test for each.
 8. **Every search query is sanitised before it reaches `MATCH`.** FTS5 has its own
    syntax and raw user input hits it: eight of ten plausible search strings are a 500
    without this. Word tokens are extracted, quoted, and joined with ` OR `.
@@ -141,8 +149,8 @@ Conventions, inherited and worth repeating:
   Strict mypy's `truthy-bool` catches it.
 - **Fakes are hand-written and must satisfy the real Protocol** (`tests/fakes/`). If a
   port changes they fail to type-check, which is how you find out.
-- **Never sleep in a test.** Inject the clock. Token expiry and the JWKS refetch window
-  are both defined by time and neither needs a real second to test.
+- **Never sleep in a test.** Inject the clock. Token expiry and the JWKS cache window are
+  both defined by time and neither needs a real second to test.
 - **Assert the outcome, never the mechanism.** The concurrency tests say "one row, one
   revision bump, no lost write", not "the lock was held".
 
@@ -181,8 +189,14 @@ Conventions, inherited and worth repeating:
 - `synchronous = NORMAL`, unlike keyring's `FULL`. A lost persona write is a forgotten
   note; a lost keyring write is a credential somebody believes is saved. See
   [ADR-0008](docs/adr/0008-sqlite.md).
-- The tests mint real RS256 tokens with a locally generated key and serve the JWKS through
-  an `httpx.MockTransport`. There is no network in the suite and no `unittest.mock`.
+- The tests mint real RS256 tokens and serve the JWKS through `keyring_client.testing`, the
+  family's shared fake, by way of `tests/fakes/keyring.py`: a real key, an
+  `httpx.MockTransport`, no network in the suite and no `unittest.mock`.
+- `keyring-client` is a path dependency on `../Keyring-api/clients/python`, so `make install`
+  needs the keyring repository checked out beside this one.
+- `settings-client` is a path dependency on `../Settings-api/clients/python`, for the same
+  reason. Unset `PERSONA_SETTINGS_API_BASE_URL` keeps today's behaviour; the client is
+  imported either way.
 
 ## Commit conventions
 

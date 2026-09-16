@@ -128,3 +128,12 @@ class LimitExceededError(DomainError):
     the transaction that does the write -- a cap checked before the write is a cap two
     concurrent writers both pass.
     """
+
+
+class PreferencesUnavailableError(DomainError):
+    """A person's settings were needed and could not be read honestly.
+
+    Either settings-api refused this service -- a grant it was not given, a token it does
+    not recognise -- or it cannot be reached and the setting in question is one that must
+    not be guessed at. Neither is the caller's doing, so it is not a 4xx.
+    """

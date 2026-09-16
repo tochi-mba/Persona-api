@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-import stat
 from typing import TYPE_CHECKING
 
 import pytest
@@ -17,6 +16,7 @@ from persona_api.storage.database import (
     make_private,
     require_foreign_keys,
 )
+from tests.support.filemode import assert_mode
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
@@ -43,12 +43,11 @@ class TestTheFileMode:
     async def test_the_database_is_owner_only(self, tmp_path: Path) -> None:
         database = Database(tmp_path / "persona.db")
         try:
-            mode = stat.S_IMODE((tmp_path / "persona.db").stat().st_mode)
+            path = tmp_path / "persona.db"
         finally:
             await database.aclose()
 
-        assert mode == DATABASE_FILE_MODE
-        assert oct(mode) == "0o600"
+        assert_mode(path, DATABASE_FILE_MODE)
 
     async def test_the_write_ahead_log_is_owner_only_too(self, tmp_path: Path) -> None:
         # The WAL holds the same data the database does. A 0600 database beside a 0644
@@ -63,11 +62,10 @@ class TestTheFileMode:
                 if (tmp_path / f"persona.db{suffix}").exists()
             ]
             assert sidecars, "the WAL should exist after a write"
-            modes = {stat.S_IMODE(path.stat().st_mode) for path in sidecars}
+            for path in sidecars:
+                assert_mode(path, DATABASE_FILE_MODE)
         finally:
             await database.aclose()
-
-        assert modes == {DATABASE_FILE_MODE}
 
     def test_a_sidecar_that_does_not_exist_yet_is_skipped(self, tmp_path: Path) -> None:
         # make_private runs during connect, before the first write, so on a brand new
@@ -79,7 +77,7 @@ class TestTheFileMode:
 
         make_private(lonely)
 
-        assert stat.S_IMODE(lonely.stat().st_mode) == DATABASE_FILE_MODE
+        assert_mode(lonely, DATABASE_FILE_MODE)
         assert not (tmp_path / "lonely.db-wal").exists()
 
     def test_a_sidecar_left_behind_by_an_unclean_shutdown_is_made_private(
@@ -96,22 +94,20 @@ class TestTheFileMode:
 
         make_private(existing)
 
-        modes = {
-            stat.S_IMODE((tmp_path / f"reopened.db{suffix}").stat().st_mode) for suffix in SIDECARS
-        }
-        assert modes == {DATABASE_FILE_MODE}
+        for suffix in SIDECARS:
+            assert_mode(tmp_path / f"reopened.db{suffix}", DATABASE_FILE_MODE)
 
     async def test_the_parent_directory_is_created_private(self, tmp_path: Path) -> None:
         nested = tmp_path / "var" / "persona.db"
         database = Database(nested)
         try:
-            mode = stat.S_IMODE(nested.parent.stat().st_mode)
+            parent = nested.parent
         finally:
             await database.aclose()
 
         # 0700, because a world-readable directory leaks the fact that a persona
         # database exists here at all.
-        assert mode == 0o700
+        assert_mode(parent, 0o700)
 
 
 class TestForeignKeys:

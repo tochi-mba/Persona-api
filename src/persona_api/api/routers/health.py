@@ -1,8 +1,13 @@
-"""Liveness and dependency health.
+"""Liveness and readiness.
 
-The one route that does not require authentication, because a load balancer cannot hold
-a token. Everything it reports is therefore written on the assumption that a stranger is
-reading it: counts and yes/no answers, never a profile name, a field key or a note.
+The two routes that do not require a token, because a load balancer cannot hold one.
+Everything they report is therefore written on the assumption that a stranger is reading
+it: counts and yes/no answers, never a profile name, a field key or a note.
+
+The split matters. ``/healthy`` says only that this process is running, and it must never
+fail: an orchestrator restarts a container whose liveness check fails, so reporting
+keyring there would have it restart a working process during keyring's outage. ``/ready``
+is where the database and keyring are reported, one line each.
 """
 
 from __future__ import annotations
@@ -19,8 +24,35 @@ STATUS_OK = "ok"
 STATUS_DEGRADED = "degraded"
 
 
+class LivenessResponse(BaseModel):
+    """What ``GET /healthy`` returns.
+
+    Deliberately says nothing about dependencies: a liveness endpoint that failed while
+    keyring was down would have an orchestrator restart healthy processes, repeatedly,
+    for somebody else's outage.
+    """
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "status": "alive",
+                    "version": "0.1.0",
+                    "environment": "production",
+                    "uptime_seconds": 1204.5,
+                }
+            ]
+        }
+    )
+
+    status: str = Field(description="Always 'alive'. This endpoint does no I/O and never fails.")
+    version: str = Field(description="Running version of the service.")
+    environment: str = Field(description="Which deployment this is.")
+    uptime_seconds: float = Field(description="Seconds since the process started serving.")
+
+
 class CheckResult(BaseModel):
-    """One dependency's contribution to overall health."""
+    """One dependency's contribution to readiness."""
 
     status: str = Field(description="'ok' or 'degraded'.")
     detail: dict[str, object] = Field(
@@ -29,14 +61,14 @@ class CheckResult(BaseModel):
 
 
 class HealthResponse(BaseModel):
-    """What ``GET /healthy`` returns.
+    """What ``GET /ready`` returns.
 
     Reported at both levels deliberately: the top-level status is what a load balancer
     reads, the per-check detail is what a human reads at three in the morning.
 
-    Nothing here is sensitive. This is the one endpoint that does not require a token,
-    so every field on it is written assuming a stranger can read it -- counts and yes/no
-    answers, never a profile, a key or a body.
+    Nothing here is sensitive. This endpoint requires no token, so every field on it is
+    written assuming a stranger can read it -- counts and yes/no answers, never a profile,
+    a key or a body.
     """
 
     model_config = ConfigDict(
@@ -53,6 +85,7 @@ class HealthResponse(BaseModel):
                             "status": "degraded",
                             "detail": {
                                 "reachable": False,
+                                "reason": "keyring's signing keys could not be fetched",
                                 "fix": "check PERSONA_KEYRING_JWKS_URL is reachable",
                             },
                         },
@@ -72,20 +105,48 @@ class HealthResponse(BaseModel):
 @router.get(
     "/healthy",
     operation_id="get_health",
-    summary="Report service health",
+    summary="Check that the service process is running",
     description=(
-        "Returns the service version, uptime, and the state of every dependency: the "
-        "persona database and the keyring whose tokens this service verifies. Responds "
-        "200 when everything is usable and 503 when any check fails, with the same body "
-        "shape either way. This is the only endpoint that does not require a token, and "
-        "it reports no personal data -- counts and yes/no answers only."
+        "Liveness only. It reports nothing about the database or keyring, because a "
+        "liveness check that failed when a dependency did would have an orchestrator "
+        "restart a healthy process during somebody else's outage. Needs no token. Use "
+        "`check_readiness` to find out whether requests will actually work."
+    ),
+    response_model=LivenessResponse,
+)
+async def get_health(container: ContainerDep) -> LivenessResponse:
+    """Report that this process is alive, whatever else is not."""
+    return LivenessResponse(
+        status="alive",
+        version=service_version(),
+        environment=container.settings.environment,
+        uptime_seconds=round(container.uptime_seconds, 3),
+    )
+
+
+@router.get(
+    "/ready",
+    operation_id="check_readiness",
+    summary="Check that every dependency this service needs is usable",
+    description=(
+        "Reports the persona database and the keyring whose tokens this service verifies. "
+        "Answers 200 when everything is usable and 503 when any check fails, with the "
+        "same body shape either way. Needs no token, and it reports no personal data -- "
+        "counts and yes/no answers only."
     ),
     response_model=HealthResponse,
     responses={status.HTTP_503_SERVICE_UNAVAILABLE: {"model": HealthResponse}},
 )
-async def get_health(container: ContainerDep, response: Response) -> HealthResponse:
+async def check_readiness(container: ContainerDep, response: Response) -> HealthResponse:
     """Check every dependency and summarize."""
-    reachable = container.jwks.is_reachable
+    # Fetches keyring's keys when none fresh are held, so a fresh process reports keyring's
+    # real state rather than whatever earlier requests happened to find. A fetch that failed
+    # is not retried within the refetch floor, so polling this does not hammer a keyring
+    # that is already down.
+    usable, reason = await container.jwks.healthy()
+    # A reason means keyring did not answer: either no token can be verified at all, or
+    # tokens are being verified against the keys a good fetch left behind.
+    reachable = reason is None
 
     checks = {
         "database": CheckResult(
@@ -96,20 +157,21 @@ async def get_health(container: ContainerDep, response: Response) -> HealthRespo
             detail={"personas": await container.personas.count_all()},
         ),
         "keyring": CheckResult(
-            # Unreachable is degraded rather than dead, the same shape keyring uses for
-            # a sealed vault: the process is fine, the database is fine, and a request
-            # whose kid is already cached still works. What fails is a token with an
-            # uncached kid, and it fails as a 503 rather than a 401.
+            # Degraded rather than dead, the same shape keyring uses for a sealed vault:
+            # the process is fine, the database is fine, and what fails is every
+            # authenticated request -- as a 503 rather than a 401.
             #
-            # `None` means nothing has needed a key yet, which is not the same as being
-            # down -- reporting it as down would have every fresh deployment start
-            # degraded before anybody had called it.
-            status=STATUS_DEGRADED if reachable is False else STATUS_OK,
+            # But only when no token could be verified. An outage survived on cached keys
+            # is ok, because taking a working instance out of rotation would turn keyring's
+            # outage into this service's; it still says keyring is unreachable, because the
+            # cached keys will not be served for ever.
+            status=STATUS_OK if usable else STATUS_DEGRADED,
             detail={
                 "reachable": reachable,
-                "fix": (
-                    "check PERSONA_KEYRING_JWKS_URL is reachable" if reachable is False else None
-                ),
+                # Fixed text from the shared client, never a traceback and never the URL,
+                # which may carry userinfo and would be handed to whoever can reach this.
+                "reason": reason,
+                "fix": None if reachable else "check PERSONA_KEYRING_JWKS_URL is reachable",
             },
         ),
     }
