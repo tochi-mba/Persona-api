@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1
+
 # A plain slim base. This service makes one kind of outbound call -- fetching keyring's
 # public keys -- and writes one small file. There is nothing else in it to go wrong.
 FROM python:3.11-slim-bookworm
@@ -19,10 +21,24 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 # git: uv fetches the family's client packages from tagged git sources.
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
-RUN uv sync --no-install-project --no-dev
+# The token exists only for this RUN, in git's process environment, never a layer.
+# Without a secret, public sources are fetched anonymously.
+RUN --mount=type=secret,id=github_token,required=false \
+    if [ -s /run/secrets/github_token ]; then \
+        export GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0="url.https://x-access-token:$(cat /run/secrets/github_token)@github.com/.insteadOf" \
+          GIT_CONFIG_VALUE_0="https://github.com/"; \
+    fi \
+    && uv sync --no-install-project --no-dev
 
 COPY src/ src/
-RUN uv sync --no-dev
+RUN --mount=type=secret,id=github_token,required=false \
+    if [ -s /run/secrets/github_token ]; then \
+        export GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0="url.https://x-access-token:$(cat /run/secrets/github_token)@github.com/.insteadOf" \
+          GIT_CONFIG_VALUE_0="https://github.com/"; \
+    fi \
+    && uv sync --no-dev
 
 # The persona database is written at runtime and must not live in the image layers.
 # 0700 because the contents are not encrypted -- unlike keyring, there is no second

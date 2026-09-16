@@ -51,8 +51,9 @@ smoke: ## End-to-end check against a persona-api already running on :8099
 run: ## Serve the API on :8004 with reload
 	$(UV) run uvicorn persona_api.api.app:create_app --factory --reload --port 8004
 
+# Signed-in gh fetches private client packages; with no session git fetches anonymously.
 docker: ## Build the container image
-	docker build -t persona-api:local .
+	@GITHUB_TOKEN="$$(gh auth token 2>/dev/null)" docker build --secret id=github_token,env=GITHUB_TOKEN -t persona-api:local .
 
 clean: ## Remove caches and build output
 	rm -rf .pytest_cache .mypy_cache .ruff_cache htmlcov .coverage build dist

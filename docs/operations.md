@@ -170,7 +170,7 @@ merely written.
 ```bash
 make run                                   # :8004 with reload, docs at /docs
 uv run persona-api                         # the entry point a deployment uses
-docker build -t persona-api:local . && docker run -p 8004:8004 \
+GITHUB_TOKEN="$(gh auth token)" docker build --secret id=github_token,env=GITHUB_TOKEN -t persona-api:local . && docker run -p 8004:8004 \
   -e PERSONA_KEYRING_ISSUER=https://keyring.example \
   -e PERSONA_KEYRING_JWKS_URL=https://keyring.example/.well-known/jwks.json \
   -v persona-data:/var/lib/persona persona-api:local
