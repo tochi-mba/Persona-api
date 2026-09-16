@@ -1,6 +1,6 @@
 # Testing
 
-`make check` is the gate: format, lint, strict mypy over `src` **and** `tests`, the four
+`make check` is the gate: format, lint, strict mypy over `src` **and** `tests`, the five
 layering contracts, and the suite at **100% branch coverage with no `# pragma: no cover`**.
 `make matrix` runs the tests on every Python CI runs, because a green `check` is one
 interpreter's opinion and coverage genuinely differs between versions.
@@ -46,25 +46,34 @@ entry.** An entry that genuinely cannot be classified gets a comment saying so, 
 
 ## Auth
 
-The highest-value group in the project, and the one written first.
+The highest-value group in the project — and most of what it defends is not tested here.
+
+The rules that decide whether a token is good — the pinned algorithm, the pinned issuer, the
+required claims, expiry on the injected clock, tampering, malformed input — and every rule
+about fetching keyring's keys — the cache, the refetch floor for an unknown `kid` (the
+amplifier), the floor after a failed fetch, stale keys through an outage — belong to
+`keyring_client`, the verifier every service in the family shares. They are tested
+exhaustively in the keyring repository, asserting on fetch *counts* where the property is a
+count, and against keyring's own signer. A second copy of that suite here would only drift
+from the first.
+
+What is tested here is what this service does with them:
 
 | Class | What it catches |
 | --- | --- |
-| `TestAudience` | A token minted for another service being accepted here. The `aud` claim is the entire reason keyring mints per-service tokens. |
-| `TestIssuer` | A token from a keyring we do not trust. |
-| `TestExpiry` | Through `FakeClock`, not a sleep. The check is `>=`, so a token is refused *at* its expiry, not just after it. |
-| `TestAlgorithmConfusion` | The classic JWT failure: `alg: none`, and HS256 signed with the JWKS **public** key, which anybody can fetch. `algorithms=["RS256"]` is a fixed list and is never read from the token. |
-| `TestTampering` | A flipped byte in the payload, and in the signature. |
-| `TestMissingClaims` | Each of the five required claims, parametrized. |
-| `TestJwksCaching` | **The amplifier.** An unknown `kid` refetches at most once per `jwks_min_refetch_seconds`, asserted on the fetch *count* under a stream of bogus kids. Without the limit, anyone can force one outbound fetch per request — a DoS amplifier pointed at keyring. |
-| `TestKeyRotation` | A replaced key being ignored until a restart. |
-| `TestKeyringUnreachable` | Startup succeeding without keyring; `/healthy` reporting **degraded**; requests getting a 503 problem body rather than a traceback — and rather than a 401, which would send the caller to re-authenticate against a service that is down. |
+| `TestTheSharedRulesAreWiredIn` | The adapter handing the shared verifier somebody else's issuer, clock or keys. `alg: none`, and HS256 signed with the JWKS **public** key, are both still refused in this service's own suite. |
+| `TestAudience` | A token for another service being accepted — including `persona.work`, which an audience *family* would accept and this service must not. The `aud` claim is the entire reason keyring mints per-service tokens. |
+| `TestAnUnknownKeyId` | A `kid` missing from the key set keyring has just served coming back as a 503. Keyring answered, and its answer is about the token: a 401. |
+| `TestKeyringUnreachable` | Startup needing keyring; keyring being down turning into a 401, which would send the caller to re-authenticate against a service that is not answering; the 503 naming the host. |
+| `TestHealth` | `/ready` reporting a guess. It asks keyring itself, is **degraded** only when no token could be verified, and says so — `reachable: false`, with a reason — while an outage is being survived on cached keys. |
 
-Plus one parametrized test asserting **every** failure returns a byte-identical 401 body
-apart from the request id. A caller holding a forged token learns nothing from which.
+Plus one test at each level asserting **every** refusal says the same thing: one message out
+of the verifier, and a byte-identical 401 body apart from the request id over HTTP. A caller
+holding a forged token learns nothing from which rule refused it.
 
-Tests mint tokens with a locally generated RSA key and serve the JWKS through an
-`httpx.MockTransport` — a hand-written fake. No network, no `unittest.mock`.
+The fake is `keyring_client.testing`, through `tests/fakes/keyring.py`: a real RSA key, a
+real JWKS document served through an `httpx.MockTransport`, and forgeries assembled by hand.
+No network, no `unittest.mock`.
 
 ## Isolation
 
@@ -166,6 +175,19 @@ undescribed route cannot ship; and a walk over every response schema in `/openap
 asserting **no field could carry a credential** — checked against the declared contract
 rather than one sampled response, so a field added later is caught by the suite rather than
 by whoever is reading the logs.
+
+## Preferences
+
+settings-api is its shared `FakeSettingsClient`, including with `unavailable = True`,
+because the outage is the case most services forget. A person may narrow a pin or recall
+cap and never raise it; a 401/403 from settings-api is a 503 with fixed text that names
+neither the grant nor the URL; a value of the wrong type leaves the configuration and
+logs the key, never the value. Two accounts on one store are held to different pin
+ceilings because the cap is a call argument, not a constructor-frozen integer.
+
+`default_persona`, `log_values`, `erasure_mode` and `grace_days` are unread on purpose:
+this service has no default-persona resolution and no sweeper, and faking either would
+be a setting that stores a value and changes nothing.
 
 ## What is deliberately not tested
 

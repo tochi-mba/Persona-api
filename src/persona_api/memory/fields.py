@@ -143,8 +143,13 @@ class FieldStore:
         source: Source,
         asserted_by: str,
         pinned: bool | None = None,
+        max_pinned: int | None = None,
     ) -> Field:
         """Create or replace one field. Idempotent on the key.
+
+        ``max_pinned`` is this write's pin ceiling. When omitted the constructor value
+        stands, so existing callers keep working; when passed it wins for this write, so
+        two concurrent requests for two accounts can have different ceilings.
 
         Raises:
             CredentialRefusedError: if the value or the description looks like a
@@ -165,6 +170,7 @@ class FieldStore:
 
         now = self._clock.now()
         searchable = f"{normalized} {described} {flatten_value(value)}"
+        pinned_cap = self._max_pinned if max_pinned is None else max_pinned
 
         def write(connection: sqlite3.Connection) -> Field:
             existing = connection.execute(
@@ -186,6 +192,7 @@ class FieldStore:
                     pinned=bool(pinned),
                     now=now,
                     searchable=searchable,
+                    max_pinned=pinned_cap,
                 )
 
             return self._revise(
@@ -199,6 +206,7 @@ class FieldStore:
                 pinned=pinned,
                 now=now,
                 searchable=searchable,
+                max_pinned=pinned_cap,
             )
 
         return await self._db.transact(write)
@@ -366,8 +374,11 @@ class FieldStore:
         pinned: bool,
         now: datetime,
         searchable: str,
+        max_pinned: int,
     ) -> Field:
-        self._check_caps(connection, account_id, profile, adding_pinned=pinned)
+        self._check_caps(
+            connection, account_id, profile, adding_pinned=pinned, max_pinned=max_pinned
+        )
         seq = _next_seq(connection, "fields")
         field_id = new_field_id()
 
@@ -423,6 +434,7 @@ class FieldStore:
         pinned: bool | None,
         now: datetime,
         searchable: str,
+        max_pinned: int,
     ) -> Field:
         account_id = existing["account_id"]
         profile = existing["profile"]
@@ -451,6 +463,7 @@ class FieldStore:
                 profile,
                 adding_pinned=will_be_pinned and not existing["pinned"],
                 reviving=was_forgotten,
+                max_pinned=max_pinned,
             )
 
         connection.execute(
@@ -491,13 +504,15 @@ class FieldStore:
             ).fetchone()
         )
 
-    def _check_caps(
+    # PLR0913: connection, identity, and the three caps this write is asking for.
+    def _check_caps(  # noqa: PLR0913
         self,
         connection: sqlite3.Connection,
         account_id: str,
         profile: str,
         *,
         adding_pinned: bool,
+        max_pinned: int,
         reviving: bool = True,
     ) -> None:
         """Refuse a write that would take the persona past a cap.
@@ -521,10 +536,10 @@ class FieldStore:
                 " AND pinned = 1 AND forgotten_at IS NULL",
                 (account_id, profile),
             ).fetchone()["total"]
-            if held >= self._max_pinned:
+            if held >= max_pinned:
                 # Pinned is a token budget, not a preference: every pinned entry goes
                 # into the assistant's prompt on every turn.
-                msg = f"at most {self._max_pinned} pinned fields per persona"
+                msg = f"at most {max_pinned} pinned fields per persona"
                 raise LimitExceededError(msg)
 
     def _index(self, connection: sqlite3.Connection, seq: int, text: str) -> None:

@@ -25,6 +25,7 @@ from httpx import ASGITransport, AsyncClient
 from persona_api.api.app import create_app
 from tests.conftest import build_settings
 from tests.integration.conftest import auth, token_for, wire_fake_keyring
+from tests.support.filemode import assert_mode
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -32,7 +33,7 @@ if TYPE_CHECKING:
 
     from persona_api.core.config import Settings
     from tests.fakes.clock import FakeClock
-    from tests.fakes.keyring import FakeJwksEndpoint, FakeKeyring
+    from tests.fakes.keyring import FakeKeyring
 
 
 @pytest.fixture
@@ -43,7 +44,7 @@ def durable(tmp_path: Path) -> Settings:
 
 @contextlib.asynccontextmanager
 async def running(
-    settings: Settings, endpoint: FakeJwksEndpoint, clock: FakeClock
+    settings: Settings, keyring: FakeKeyring, clock: FakeClock
 ) -> AsyncIterator[AsyncClient]:
     """One run of the service, lifespan and all, over the given settings.
 
@@ -55,22 +56,22 @@ async def running(
         LifespanManager(app) as managed,
         AsyncClient(transport=ASGITransport(app=managed.app), base_url="http://p.test") as http,
     ):
-        wire_fake_keyring(app, endpoint, clock)
+        wire_fake_keyring(app, keyring, clock)
         yield http
 
 
 async def test_a_persona_and_its_card_survive(
-    durable: Settings, endpoint: FakeJwksEndpoint, clock: FakeClock, keyring: FakeKeyring
+    durable: Settings, keyring: FakeKeyring, clock: FakeClock
 ) -> None:
     token = token_for(keyring)
-    async with running(durable, endpoint, clock) as first:
+    async with running(durable, keyring, clock) as first:
         await first.post(
             "/v1/personas",
             json={"profile": "work", "display_name": "Ada", "summary": "dry, concise"},
             headers=auth(token),
         )
 
-    async with running(durable, endpoint, clock) as second:
+    async with running(durable, keyring, clock) as second:
         response = await second.get("/v1/personas/work", headers=auth(token))
 
         assert response.status_code == 200
@@ -78,10 +79,10 @@ async def test_a_persona_and_its_card_survive(
 
 
 async def test_fields_and_notes_survive(
-    durable: Settings, endpoint: FakeJwksEndpoint, clock: FakeClock, keyring: FakeKeyring
+    durable: Settings, keyring: FakeKeyring, clock: FakeClock
 ) -> None:
     token = token_for(keyring)
-    async with running(durable, endpoint, clock) as first:
+    async with running(durable, keyring, clock) as first:
         await first.put(
             "/v1/personas/work/fields/voice",
             json={"description": "how it speaks", "value": ["dry", "concise"]},
@@ -93,7 +94,7 @@ async def test_fields_and_notes_survive(
             headers=auth(token),
         )
 
-    async with running(durable, endpoint, clock) as second:
+    async with running(durable, keyring, clock) as second:
         field = await second.get("/v1/personas/work/fields/voice", headers=auth(token))
         notes = await second.get("/v1/personas/work/notes", headers=auth(token))
 
@@ -101,32 +102,30 @@ async def test_fields_and_notes_survive(
         assert [note["body"] for note in notes.json()["notes"]] == ["they went quiet"]
 
 
-async def test_pins_survive(
-    durable: Settings, endpoint: FakeJwksEndpoint, clock: FakeClock, keyring: FakeKeyring
-) -> None:
+async def test_pins_survive(durable: Settings, keyring: FakeKeyring, clock: FakeClock) -> None:
     # A pin that did not survive would quietly empty the identity block, and the
     # assistant would start a turn knowing nothing about itself.
     token = token_for(keyring)
-    async with running(durable, endpoint, clock) as first:
+    async with running(durable, keyring, clock) as first:
         await first.put(
             "/v1/personas/work/fields/voice",
             json={"description": "how it speaks", "value": "dry", "pinned": True},
             headers=auth(token),
         )
 
-    async with running(durable, endpoint, clock) as second:
+    async with running(durable, keyring, clock) as second:
         identity = (await second.get("/v1/personas/work", headers=auth(token))).json()
 
         assert [field["key"] for field in identity["fields"]] == ["voice"]
 
 
 async def test_searchability_survives(
-    durable: Settings, endpoint: FakeJwksEndpoint, clock: FakeClock, keyring: FakeKeyring
+    durable: Settings, keyring: FakeKeyring, clock: FakeClock
 ) -> None:
     # The one that could regress alone. An index rebuilt into a temporary table on every
     # start would pass every other assertion in this file.
     token = token_for(keyring)
-    async with running(durable, endpoint, clock) as first:
+    async with running(durable, keyring, clock) as first:
         await first.post(
             "/v1/personas/work/notes",
             json={"body": "a memorable phrase about penguins"},
@@ -138,7 +137,7 @@ async def test_searchability_survives(
             headers=auth(token),
         )
 
-    async with running(durable, endpoint, clock) as second:
+    async with running(durable, keyring, clock) as second:
         found = (await second.get("/v1/recall?q=penguins", headers=auth(token))).json()
         in_a_list = (await second.get("/v1/recall?q=ambient", headers=auth(token))).json()
 
@@ -147,30 +146,30 @@ async def test_searchability_survives(
 
 
 async def test_the_event_log_survives(
-    durable: Settings, endpoint: FakeJwksEndpoint, clock: FakeClock, keyring: FakeKeyring
+    durable: Settings, keyring: FakeKeyring, clock: FakeClock
 ) -> None:
     token = token_for(keyring)
-    async with running(durable, endpoint, clock) as first:
+    async with running(durable, keyring, clock) as first:
         await first.put(
             "/v1/personas/work/fields/voice",
             json={"description": "how it speaks", "value": "dry"},
             headers=auth(token),
         )
 
-    async with running(durable, endpoint, clock) as second:
+    async with running(durable, keyring, clock) as second:
         events = (await second.get("/v1/personas/work/events", headers=auth(token))).json()
 
         assert "field.set" in [event["action"] for event in events["events"]]
 
 
 async def test_a_forgotten_note_stays_forgotten(
-    durable: Settings, endpoint: FakeJwksEndpoint, clock: FakeClock, keyring: FakeKeyring
+    durable: Settings, keyring: FakeKeyring, clock: FakeClock
 ) -> None:
     # The negative, and the one that matters most: a restart that resurrected tombstoned
     # rows would be worse than one that lost them, because somebody asked for these to
     # be gone.
     token = token_for(keyring)
-    async with running(durable, endpoint, clock) as first:
+    async with running(durable, keyring, clock) as first:
         written = await first.post(
             "/v1/personas/work/notes",
             json={"body": "something regretted"},
@@ -179,7 +178,7 @@ async def test_a_forgotten_note_stays_forgotten(
         note_id = written.json()["note_id"]
         await first.delete(f"/v1/personas/work/notes/{note_id}", headers=auth(token))
 
-    async with running(durable, endpoint, clock) as second:
+    async with running(durable, keyring, clock) as second:
         read = await second.get(f"/v1/personas/work/notes/{note_id}", headers=auth(token))
         recall = (await second.get("/v1/recall?q=regretted", headers=auth(token))).json()
 
@@ -193,10 +192,10 @@ async def test_a_forgotten_note_stays_forgotten(
 
 
 async def test_a_deleted_persona_stays_deleted(
-    durable: Settings, endpoint: FakeJwksEndpoint, clock: FakeClock, keyring: FakeKeyring
+    durable: Settings, keyring: FakeKeyring, clock: FakeClock
 ) -> None:
     token = token_for(keyring)
-    async with running(durable, endpoint, clock) as first:
+    async with running(durable, keyring, clock) as first:
         await first.put(
             "/v1/personas/work/fields/voice",
             json={"description": "how it speaks", "value": "dry"},
@@ -204,7 +203,7 @@ async def test_a_deleted_persona_stays_deleted(
         )
         await first.delete("/v1/personas/work", headers=auth(token))
 
-    async with running(durable, endpoint, clock) as second:
+    async with running(durable, keyring, clock) as second:
         assert (await second.get("/v1/personas/work", headers=auth(token))).status_code == 404
         # And its words are not still in the search index, which is what the cascade
         # triggers are for.
@@ -215,22 +214,18 @@ async def test_a_deleted_persona_stays_deleted(
 
 
 async def test_the_database_file_is_still_owner_only_after_a_restart(
-    durable: Settings, endpoint: FakeJwksEndpoint, clock: FakeClock, keyring: FakeKeyring
+    durable: Settings, keyring: FakeKeyring, clock: FakeClock
 ) -> None:
     # Nothing in this file is encrypted, so the mode is the whole defence -- and a
     # reopen is exactly when a leftover -wal from an unclean shutdown gets its mode
     # applied.
-    import stat
-
     token = token_for(keyring)
-    async with running(durable, endpoint, clock) as first:
+    async with running(durable, keyring, clock) as first:
         await first.post("/v1/personas", json={"profile": "work"}, headers=auth(token))
 
-    async with running(durable, endpoint, clock) as second:
+    async with running(durable, keyring, clock) as second:
         await second.get("/healthy")
 
-    modes = {
-        stat.S_IMODE(path.stat().st_mode)
-        for path in [durable.database_path, *durable.database_path.parent.glob("*.db-*")]
-    }
-    assert modes == {0o600}
+    assert_mode(durable.database_path, 0o600)
+    for path in durable.database_path.parent.glob("*.db-*"):
+        assert_mode(path, 0o600)

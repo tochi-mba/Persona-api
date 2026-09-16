@@ -10,14 +10,14 @@ much of it: one process, one file, one outbound dependency.
 | Python | 3.11 or 3.12 (both are in CI) |
 | Disk | one SQLite file plus its `-wal`/`-shm` sidecars |
 | Network, inbound | one port, behind a TLS-terminating proxy |
-| Network, outbound | keyring's JWKS URL, and nothing else |
-| Secrets | **none** — this service holds no key of its own |
+| Network, outbound | keyring's JWKS URL, and settings-api when `PERSONA_SETTINGS_API_BASE_URL` is set |
+| Secrets | **none**, unless settings-api is on, in which case `PERSONA_SETTINGS_API_TOKEN` |
 
-That last row is worth pausing on. persona-api has no master key, no signing key, no
-admin token and no service credential. It verifies somebody else's signatures with a
-public key it fetches over HTTP. There is nothing here to leak, rotate, or lose, which is
-a direct consequence of [ADR-0003](adr/0003-no-administrative-surface.md) and
-[ADR-0007](adr/0007-local-jwks-verification.md).
+That last row is worth pausing on. Without settings-api, persona-api has no master key, no
+signing key, no admin token and no service credential. It verifies somebody else's
+signatures with a public key it fetches over HTTP. Turning settings-api on adds one
+service token, held only to prove which service is calling, never to impersonate a
+person.
 
 ## Configuration
 
@@ -34,8 +34,32 @@ The four that a deployment must actually think about:
 | --- | --- |
 | `PERSONA_KEYRING_ISSUER` | Pinned against the token's `iss`. Must match keyring's `KEYRING_ISSUER` **exactly**. A mismatch refuses every token, identically and unhelpfully — which is by design, and is the first thing to check when nothing authenticates. |
 | `PERSONA_KEYRING_JWKS_URL` | Where the verifying key comes from. Reachable from this process, over a network you trust to the same degree you trust keyring. |
-| `PERSONA_AUDIENCE` | Pinned against the token's `aud`. keyring must be willing to mint for it: its `KEYRING_SERVICE_TOKENS` has to name `persona`. |
+| `PERSONA_AUDIENCE` | Pinned against the token's `aud`, exactly: `persona.work` is refused like `media-tool`. keyring mints a token for whatever audience it is asked for, so nothing needs setting there — in particular persona-api needs **no** entry in keyring's `KEYRING_SERVICE_TOKENS`, which only admits services to keyring's `/v1/internal` endpoints. |
 | `PERSONA_DATABASE_PATH` | See the next section. |
+
+### settings-api
+
+Off by default. Both `PERSONA_SETTINGS_API_BASE_URL` and `PERSONA_SETTINGS_API_TOKEN`
+must be set together, or neither; half a pair is a startup error. The token is checked
+with the same 32-character rule settings-api enforces, and is never echoed on failure.
+
+When on, each authenticated request that needs a page size or a pin ceiling asks
+settings-api for that caller's `persona` namespace, presenting the same user token
+keyring minted. The grant there needs `audience_prefix` equal to `PERSONA_AUDIENCE`
+(`persona` unless you changed it). A person may **lower** `recall_default_limit`,
+`max_pinned_fields` and `max_pinned_notes`; they cannot raise them above this
+deployment, and `PERSONA_RECALL_MAX_LIMIT` remains the hard cap on a named page size.
+
+If settings-api has never answered, those three fall back to the configuration. If it
+refuses this service (401/403), the request is **503** with a fixed body that names
+neither the grant nor the URL.
+
+`default_persona`, `log_values`, `erasure_mode` and `grace_days` are in the catalogue
+and do nothing here. Honouring them means this service grows a default-persona
+resolution and a sweeper; until it does, setting them stores a value and changes
+nothing.
+
+Do not fetch settings at startup. An empty URL keeps today's behaviour exactly.
 
 ### Deliberate absences
 
@@ -84,9 +108,10 @@ Restoring is `cp` in the other direction, with the service stopped.
 
 ## Health
 
-`GET /healthy` is the only unauthenticated endpoint, and everything on it is written on the
-assumption that a stranger is reading it: counts and yes/no answers, never a profile name,
-a field key or a note.
+`GET /healthy` and `GET /ready` are the only unauthenticated endpoints, and everything on
+them is written on the assumption that a stranger is reading it: counts and yes/no answers,
+never a profile name, a field key or a note. Liveness does no I/O and never fails;
+readiness is where the database and keyring are reported.
 
 ```json
 {
@@ -98,20 +123,32 @@ a field key or a note.
     "database": {"status": "ok", "detail": {"personas": 7}},
     "keyring": {"status": "degraded",
                 "detail": {"reachable": false,
+                           "reason": "keyring's signing keys could not be fetched",
                            "fix": "check PERSONA_KEYRING_JWKS_URL is reachable"}}
   }
 }
 ```
 
+`/ready` asks keyring for its keys itself whenever it holds none fresh, so a fresh process
+reports keyring's real state rather than waiting for a token to find out. A fetch that
+failed is not retried until `PERSONA_JWKS_MIN_REFETCH_SECONDS` has passed, so polling the
+endpoint does not hammer a keyring that is already down.
+
 **keyring unreachable is `degraded`, not dead** — the same shape keyring uses for a sealed
-vault. The process is fine, the database is fine, and requests carrying a token whose `kid`
-is already cached still work. What fails is a token with an uncached `kid`, and it fails
-with **503 and a problem body** rather than a 401, because nothing is wrong with the
+vault. The process is fine and the database is fine; what fails is every authenticated
+request, with **503 and a problem body** rather than a 401, because nothing is wrong with the
 caller's token and telling them it was rejected sends them to re-authenticate against a
 service that is down.
 
+**Unless keys are already held.** Keys from a successful fetch keep verifying tokens through
+an outage for up to a day past `PERSONA_JWKS_CACHE_SECONDS`. That is reported as `ok` — the
+instance still works, and taking it out of rotation would turn keyring's outage into this
+service's — but with `reachable: false` and a `reason` saying tokens are being verified
+against cached keys, so an operator finds out before the grace runs out.
+
 `degraded` returns HTTP 503 so a load balancer takes the instance out; the body shape is
-identical either way.
+identical either way. The image's `HEALTHCHECK` wants a 200, so a container started while
+keyring is down reports unhealthy until keyring answers.
 
 ## Logs
 
@@ -131,9 +168,9 @@ merely written.
 ## Running it
 
 ```bash
-make run                                   # :8002 with reload, docs at /docs
+make run                                   # :8004 with reload, docs at /docs
 uv run persona-api                         # the entry point a deployment uses
-docker build -t persona-api:local . && docker run -p 8002:8002 \
+docker build -t persona-api:local . && docker run -p 8004:8004 \
   -e PERSONA_KEYRING_ISSUER=https://keyring.example \
   -e PERSONA_KEYRING_JWKS_URL=https://keyring.example/.well-known/jwks.json \
   -v persona-data:/var/lib/persona persona-api:local
@@ -169,7 +206,7 @@ curl -sX POST .../v1/personas/work/notes -d '{"body":"-----BEGIN RSA PRIVATE KEY
 | Personas per account | `PERSONA_MAX_PERSONAS_PER_ACCOUNT` (20) |
 | Fields per persona | `PERSONA_MAX_FIELDS_PER_PERSONA` (500) |
 | Notes per persona | `PERSONA_MAX_NOTES_PER_PERSONA` (5000) |
-| Pinned fields / notes | `PERSONA_MAX_PINNED_FIELDS` / `_NOTES` (20 each) |
+| Pinned fields / notes | `PERSONA_MAX_PINNED_FIELDS` / `_NOTES` (20 each); a person may lower these via settings-api |
 | Events | `PERSONA_MAX_EVENTS` (10000), trimmed in the same transaction as the insert |
 
 Every one of these is enforced **inside the transaction that does the write**. A caller

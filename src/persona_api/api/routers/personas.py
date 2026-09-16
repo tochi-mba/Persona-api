@@ -22,7 +22,12 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Query, Response, status
 
-from persona_api.api.dependencies import ContainerDep, CurrentCallerDep
+from persona_api.api.dependencies import (
+    ContainerDep,
+    CurrentCallerDep,
+    LimitQuery,
+    PreferencesDep,
+)
 from persona_api.api.schemas.common import Problem
 from persona_api.api.schemas.personas import (
     CreatePersonaRequest,
@@ -82,8 +87,8 @@ _UNAUTHORIZED: dict[int | str, dict[str, Any]] = {
     status.HTTP_503_SERVICE_UNAVAILABLE: {
         "model": Problem,
         "description": (
-            "keyring could not be reached to fetch the keys that verify your token. "
-            "Your token is probably fine; try again shortly."
+            "Something this service needed could not be established: keyring's signing "
+            "keys, or your settings. Your token is probably fine; try again shortly."
         ),
     },
 }
@@ -154,7 +159,6 @@ def render_event(event: Event) -> EventResponse:
     )
 
 
-LimitQuery = Annotated[int, Query(ge=1, le=100, description="Rows per page. Max 100.")]
 CursorQuery = Annotated[str | None, Query(description="From a previous page's next_cursor.")]
 IncludeForgottenQuery = Annotated[
     bool, Query(description="Include rows that have been forgotten. Off by default.")
@@ -369,7 +373,7 @@ async def list_fields(  # noqa: PLR0913, PLR0917 -- one parameter per documented
     container: ContainerDep,
     caller: CurrentCallerDep,
     profile: str,
-    limit: LimitQuery = 20,
+    limit: LimitQuery,
     cursor: CursorQuery = None,
     q: Annotated[str | None, Query(description="Full-text search within this persona.")] = None,
     source: Annotated[Source | None, Query(description="Filter by claimed source.")] = None,
@@ -435,14 +439,17 @@ async def list_fields(  # noqa: PLR0913, PLR0917 -- one parameter per documented
         },
     },
 )
-async def set_field(
+async def set_field(  # noqa: PLR0913, PLR0917
     container: ContainerDep,
     caller: CurrentCallerDep,
+    preferences: PreferencesDep,
     profile: str,
     key: str,
     request: SetFieldRequest,
 ) -> FieldResponse:
     """Write one field."""
+    # PLR0913/PLR0917: FastAPI injects container, caller, preferences plus the path
+    # and body. Preferences is the sixth because the pin ceiling is this person's.
     persona = await container.persona_service.ensure(
         account_id=caller.account_id,
         profile=profile,
@@ -461,6 +468,7 @@ async def set_field(
         # extra="forbid" rather than having the lie quietly ignored.
         asserted_by=caller.audience,
         pinned=request.pinned,
+        max_pinned=preferences.max_pinned_fields,
     )
     return render_field(field)
 
@@ -543,7 +551,7 @@ async def list_notes(  # noqa: PLR0913, PLR0917 -- one parameter per documented 
     container: ContainerDep,
     caller: CurrentCallerDep,
     profile: str,
-    limit: LimitQuery = 20,
+    limit: LimitQuery,
     cursor: CursorQuery = None,
     q: Annotated[str | None, Query(description="Full-text search within this persona.")] = None,
     kind: Annotated[NoteKind | None, Query(description="episode, observation or lesson.")] = None,
@@ -607,6 +615,7 @@ async def list_notes(  # noqa: PLR0913, PLR0917 -- one parameter per documented 
 async def write_note(
     container: ContainerDep,
     caller: CurrentCallerDep,
+    preferences: PreferencesDep,
     profile: str,
     request: WriteNoteRequest,
 ) -> NoteResponse:
@@ -625,6 +634,7 @@ async def write_note(
         source=request.source,
         asserted_by=caller.audience,
         pinned=request.pinned,
+        max_pinned=preferences.max_pinned_notes,
     )
     return render_note(note)
 
@@ -670,14 +680,17 @@ async def get_note(
     response_model=NoteResponse,
     responses={**_UNAUTHORIZED, **_NOT_FOUND, **_REFUSED},
 )
-async def revise_note(
+async def revise_note(  # noqa: PLR0913, PLR0917
     container: ContainerDep,
     caller: CurrentCallerDep,
+    preferences: PreferencesDep,
     profile: str,
     note_id: str,
     request: ReviseNoteRequest,
 ) -> NoteResponse:
     """Change the named parts of one note."""
+    # PLR0913/PLR0917: FastAPI injects container, caller, preferences plus the path
+    # and body. Preferences is the sixth because the pin ceiling is this person's.
     persona = await container.persona_service.get(caller.account_id, profile)
     note = await container.notes.revise(
         account_id=caller.account_id,
@@ -688,6 +701,7 @@ async def revise_note(
         pinned=request.pinned,
         source=request.source,
         asserted_by=caller.audience,
+        max_pinned=preferences.max_pinned_notes,
     )
     return render_note(note)
 
@@ -743,7 +757,7 @@ async def recall(
     caller: CurrentCallerDep,
     profile: str,
     q: Annotated[str, Query(description="What to search for. Needs at least one word.")],
-    limit: LimitQuery = 20,
+    limit: LimitQuery,
 ) -> RecallResponse:
     """Search within one persona."""
     persona = await container.persona_service.get(caller.account_id, profile)
@@ -773,7 +787,7 @@ async def recall_everywhere(
     container: ContainerDep,
     caller: CurrentCallerDep,
     q: Annotated[str, Query(description="What to search for. Needs at least one word.")],
-    limit: LimitQuery = 20,
+    limit: LimitQuery,
 ) -> RecallResponse:
     """Search across every persona this account owns."""
     found = await container.persona_service.recall(caller.account_id, query=q, limit=limit)
@@ -800,7 +814,7 @@ async def export_persona(  # noqa: PLR0913, PLR0917 -- two independent cursors, 
     container: ContainerDep,
     caller: CurrentCallerDep,
     profile: str,
-    limit: LimitQuery = 20,
+    limit: LimitQuery,
     field_cursor: CursorQuery = None,
     note_cursor: CursorQuery = None,
     include_forgotten: IncludeForgottenQuery = False,
@@ -845,7 +859,7 @@ async def read_persona_events(
     container: ContainerDep,
     caller: CurrentCallerDep,
     profile: str,
-    limit: LimitQuery = 20,
+    limit: LimitQuery,
     cursor: CursorQuery = None,
 ) -> EventListResponse:
     """One page of this persona's change log."""

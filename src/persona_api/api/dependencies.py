@@ -19,12 +19,14 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import Depends, Request
+from fastapi import Depends, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from persona_api.auth.verifier import VerifiedCaller
 from persona_api.core.container import Container
 from persona_api.core.context import set_account_id
+from persona_api.core.preferences import Preferences
 from persona_api.domain.errors import AuthenticationError
 
 bearer_scheme = HTTPBearer(
@@ -77,3 +79,61 @@ async def get_current_caller(
 
 
 CurrentCallerDep = Annotated[VerifiedCaller, Depends(get_current_caller)]
+
+
+async def get_preferences(container: ContainerDep, caller: CurrentCallerDep) -> Preferences:
+    """This caller's caps: their own, or the deployment's when settings-api is off."""
+    return await container.preferences.for_token(caller.token)
+
+
+PreferencesDep = Annotated[Preferences, Depends(get_preferences)]
+
+
+async def page_limit(
+    container: ContainerDep,
+    preferences: PreferencesDep,
+    limit: Annotated[
+        int | None,
+        Query(
+            ge=1,
+            description=(
+                "Rows per page. Defaults to this person's PERSONA_RECALL_DEFAULT_LIMIT "
+                "(or the deployment's, when settings-api is off) and may not exceed "
+                "PERSONA_RECALL_MAX_LIMIT (20 and 100 unless the operator changed them)."
+            ),
+        ),
+    ] = None,
+) -> int:
+    """The page size for this request: the caller's own, or the deployment's default.
+
+    Read from preferences per request rather than written into each route's signature.
+    The ``= 20`` and ``le=100`` this replaced were second copies of
+    ``recall_default_limit`` and ``recall_max_limit`` that nothing kept in step, so
+    changing either setting changed nothing at all. When settings-api is on, the default
+    is this person's, narrowed by the deployment's.
+
+    Raises:
+        RequestValidationError: above the configured maximum, in exactly the shape any
+            other out-of-range query parameter is refused in.
+        PreferencesUnavailableError: settings-api refused this service.
+    """
+    if limit is None:
+        return preferences.recall_default_limit
+    if limit > container.settings.recall_max_limit:
+        raise RequestValidationError(
+            [
+                {
+                    "type": "less_than_equal",
+                    "loc": ("query", "limit"),
+                    "msg": (
+                        "Input should be less than or equal to "
+                        f"{container.settings.recall_max_limit}"
+                    ),
+                    "input": limit,
+                }
+            ]
+        )
+    return limit
+
+
+LimitQuery = Annotated[int, Depends(page_limit)]

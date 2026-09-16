@@ -48,8 +48,8 @@ schema: ## Regenerate the checked-in schema snapshot after changing a migration
 smoke: ## End-to-end check against a persona-api already running on :8099
 	$(UV) run python scripts/smoke.py
 
-run: ## Serve the API on :8002 with reload
-	$(UV) run uvicorn persona_api.api.app:create_app --factory --reload --port 8002
+run: ## Serve the API on :8004 with reload
+	$(UV) run uvicorn persona_api.api.app:create_app --factory --reload --port 8004
 
 docker: ## Build the container image
 	docker build -t persona-api:local .

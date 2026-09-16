@@ -410,6 +410,72 @@ class TestCaps:
 
         assert revised.pinned is False
 
+    async def test_a_per_call_pin_ceiling_wins_over_the_constructor(
+        self, database: Database, clock: FakeClock, events: SqlEventLog
+    ) -> None:
+        store = NoteStore(
+            database=database,
+            clock=clock,
+            events=events,
+            max_body_chars=4000,
+            max_notes=5000,
+            max_pinned=20,
+        )
+        await write_note(store, body="one", pinned=True, max_pinned=1)
+
+        with pytest.raises(LimitExceededError, match="at most 1 pinned"):
+            await write_note(store, body="two", pinned=True, max_pinned=1)
+
+    async def test_revising_honours_the_per_call_pin_ceiling(
+        self, database: Database, clock: FakeClock, events: SqlEventLog
+    ) -> None:
+        store = NoteStore(
+            database=database,
+            clock=clock,
+            events=events,
+            max_body_chars=4000,
+            max_notes=5000,
+            max_pinned=20,
+        )
+        await write_note(store, body="already pinned", pinned=True, max_pinned=1)
+        later = await write_note(store, body="not yet")
+
+        with pytest.raises(LimitExceededError, match="at most 1 pinned"):
+            await store.revise(
+                account_id=ACCOUNT,
+                profile=PROFILE,
+                note_id=later.note_id,
+                pinned=True,
+                source=Source.ASSISTANT,
+                asserted_by=ASSERTED_BY,
+                max_pinned=1,
+            )
+
+    async def test_two_accounts_can_have_different_pin_ceilings_on_the_same_store(
+        self, database: Database, clock: FakeClock, events: SqlEventLog
+    ) -> None:
+        store = NoteStore(
+            database=database,
+            clock=clock,
+            events=events,
+            max_body_chars=4000,
+            max_notes=5000,
+            max_pinned=20,
+        )
+
+        await asyncio.gather(
+            write_note(store, account_id=ACCOUNT, body="a1", pinned=True, max_pinned=1),
+            write_note(store, account_id=ACCOUNT, body="a2", pinned=True, max_pinned=1),
+            write_note(store, account_id=OTHER_ACCOUNT, body="b1", pinned=True, max_pinned=3),
+            write_note(store, account_id=OTHER_ACCOUNT, body="b2", pinned=True, max_pinned=3),
+            write_note(store, account_id=OTHER_ACCOUNT, body="b3", pinned=True, max_pinned=3),
+            write_note(store, account_id=OTHER_ACCOUNT, body="b4", pinned=True, max_pinned=3),
+            return_exceptions=True,
+        )
+
+        assert len(await store.pinned(ACCOUNT, PROFILE)) == 1
+        assert len(await store.pinned(OTHER_ACCOUNT, PROFILE)) == 3
+
 
 class TestEvents:
     async def test_writing_records_it(self, notes: NoteStore, events: SqlEventLog) -> None:

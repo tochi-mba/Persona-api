@@ -424,6 +424,49 @@ class TestCaps:
 
         assert ordinary.pinned is False
 
+    async def test_a_per_call_pin_ceiling_wins_over_the_constructor(
+        self, database: Database, clock: FakeClock, events: SqlEventLog
+    ) -> None:
+        # The constructor value is the deployment backstop. A request that carries a
+        # narrower cap for this person must be held to that, not to the process-wide 20.
+        store = FieldStore(
+            database=database,
+            clock=clock,
+            events=events,
+            limits=ValueLimits(),
+            max_fields=500,
+            max_pinned=20,
+        )
+        await set_field(store, key="one", pinned=True, max_pinned=1)
+
+        with pytest.raises(LimitExceededError, match="at most 1 pinned"):
+            await set_field(store, key="two", pinned=True, max_pinned=1)
+
+    async def test_two_accounts_can_have_different_pin_ceilings_on_the_same_store(
+        self, database: Database, clock: FakeClock, events: SqlEventLog
+    ) -> None:
+        store = FieldStore(
+            database=database,
+            clock=clock,
+            events=events,
+            limits=ValueLimits(),
+            max_fields=500,
+            max_pinned=20,
+        )
+
+        await asyncio.gather(
+            set_field(store, account_id=ACCOUNT, key="a1", pinned=True, max_pinned=1),
+            set_field(store, account_id=ACCOUNT, key="a2", pinned=True, max_pinned=1),
+            set_field(store, account_id=OTHER_ACCOUNT, key="b1", pinned=True, max_pinned=3),
+            set_field(store, account_id=OTHER_ACCOUNT, key="b2", pinned=True, max_pinned=3),
+            set_field(store, account_id=OTHER_ACCOUNT, key="b3", pinned=True, max_pinned=3),
+            set_field(store, account_id=OTHER_ACCOUNT, key="b4", pinned=True, max_pinned=3),
+            return_exceptions=True,
+        )
+
+        assert len(await store.pinned(ACCOUNT, PROFILE)) == 1
+        assert len(await store.pinned(OTHER_ACCOUNT, PROFILE)) == 3
+
     async def test_a_value_over_a_limit_is_refused_naming_it(
         self, database: Database, clock: FakeClock, events: SqlEventLog
     ) -> None:

@@ -26,6 +26,7 @@ from persona_api.auth.jwks import JwksClient
 from persona_api.auth.verifier import TokenVerifier
 from persona_api.core.clock import SystemClock
 from persona_api.core.logging import get_logger
+from persona_api.core.preferences import build_preference_source
 from persona_api.domain.fields import ValueLimits
 from persona_api.events.sql_log import SqlEventLog
 from persona_api.memory.fields import FieldStore
@@ -38,6 +39,7 @@ from persona_api.storage.migrator import migrate
 if TYPE_CHECKING:
     from persona_api.core.clock import Clock
     from persona_api.core.config import Settings
+    from persona_api.core.preferences import PreferenceSource
     from persona_api.events.log import EventLog
 
 logger = get_logger(__name__)
@@ -60,11 +62,25 @@ class Container:
     persona_service: PersonaService
     jwks: JwksClient
     verifier: TokenVerifier
+    preferences: PreferenceSource
     started_monotonic: float
 
     @classmethod
-    def build(cls, settings: Settings, *, clock: Clock | None = None) -> Container:
-        """Construct every adapter named by ``settings``."""
+    def build(
+        cls,
+        settings: Settings,
+        *,
+        clock: Clock | None = None,
+        preferences: PreferenceSource | None = None,
+    ) -> Container:
+        """Construct every adapter named by ``settings``.
+
+        Args:
+            settings: the configuration to wire.
+            clock: substituted by tests that need to control time.
+            preferences: substituted by tests, which read people's settings from a fake
+                settings-api rather than a real one.
+        """
         clock = clock or SystemClock()
         database = Database(settings.database_path)
         migrate(database, now=clock.now())
@@ -92,16 +108,22 @@ class Container:
             max_notes=settings.max_notes_per_persona,
             max_pinned=settings.max_pinned_notes,
         )
-        # Constructed, not contacted. The first token that needs a key is what provokes
-        # the first fetch; a persona service that will not start because keyring is down
-        # is a persona service that cannot report keyring being down.
+        # Constructed, not contacted. The first token that needs a key, or the first health
+        # check, is what provokes the first fetch; a persona service that will not start
+        # because keyring is down is a persona service that cannot report keyring being down.
         jwks = JwksClient(
             url=settings.keyring_jwks_url,
             clock=clock,
             cache_seconds=settings.jwks_cache_seconds,
             min_refetch_seconds=settings.jwks_min_refetch_seconds,
             timeout_seconds=settings.keyring_http_timeout_seconds,
+            # The shared client's diagnostics -- a refused key id, a fetch that failed -- land
+            # in this service's structured, redacted log rather than the standard library's.
+            logger=get_logger("persona_api.auth.jwks"),
         )
+        # Same rule for settings-api: constructed here, contacted on the first request that
+        # needs somebody's own caps. An empty URL keeps today's behaviour exactly.
+        chosen = preferences if preferences is not None else build_preference_source(settings)
 
         return cls(
             settings=settings,
@@ -126,6 +148,7 @@ class Container:
                 audience=settings.audience,
                 clock=clock,
             ),
+            preferences=chosen,
             started_monotonic=clock.monotonic(),
         )
 
@@ -135,6 +158,7 @@ class Container:
 
     async def aclose(self) -> None:
         """Shut everything down in dependency order."""
+        await self.preferences.aclose()
         await self.jwks.aclose()
         # Last: everything above may still want to write on its way out.
         await self.database.aclose()

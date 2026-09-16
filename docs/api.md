@@ -11,7 +11,7 @@ Interactive docs at `/docs` on a running instance; the machine-readable contract
 
 ## Authenticating
 
-Every route except `GET /healthy` needs a keyring token:
+Every route except `GET /healthy` and `GET /ready` needs a keyring token:
 
 ```
 Authorization: Bearer <RS256 JWT>
@@ -22,19 +22,20 @@ Mint one from keyring:
 ```bash
 curl -sX POST "$KEYRING/v1/auth/service-token" \
   -H "Authorization: Bearer $SESSION" \
+  -H "Content-Type: application/json" \
   -d '{"audience": "persona"}'
 ```
 
 persona-api verifies it **locally** against keyring's JWKS — it never calls keyring at
 request time. The token's `sub` is the only identity this service gets; its `aud` becomes
-`asserted_by` on everything you write. See
+`asserted_by` on everything you write, and must be exactly `persona`. See
 [ADR-0007](adr/0007-local-jwks-verification.md).
 
 Two failures worth telling apart:
 
 | | Meaning |
 | --- | --- |
-| **401** | The token was not accepted. One message for every reason — expired, wrong audience, wrong issuer, forged, malformed. You learn nothing from which, deliberately. |
+| **401** | The token was not accepted. One message for every reason — expired, wrong audience, wrong issuer, forged, malformed, or signed with a key keyring does not publish. You learn nothing from which, deliberately. |
 | **503** | keyring could not be reached to fetch the verifying keys. **Your token is probably fine.** Retry shortly; do not re-authenticate. |
 
 ## The operations
@@ -42,6 +43,7 @@ Two failures worth telling apart:
 | Method | Path | operation_id |
 | --- | --- | --- |
 | GET | `/healthy` | `get_health` |
+| GET | `/ready` | `check_readiness` |
 | GET | `/v1/personas` | `list_personas` |
 | POST | `/v1/personas` | `create_persona` |
 | GET | `/v1/personas/{profile}` | `get_persona` |

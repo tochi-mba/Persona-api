@@ -62,21 +62,29 @@ Four rules, each of which is an ADR and at least one test.
 ```bash
 make install     # create the venv and install everything
 make check       # the gate: format, lint, strict types, contracts, 100% branch coverage
-make run         # serve on :8002, docs at /docs
+make run         # serve on :8004, docs at /docs
 ```
 
 You will need a running keyring to get a token:
 
 ```bash
-# in keyring, with KEYRING_SERVICE_TOKENS='{"persona":"..."}' set
 curl -sX POST localhost:8001/v1/auth/service-token \
   -H "Authorization: Bearer $SESSION" \
+  -H "Content-Type: application/json" \
   -d '{"audience":"persona"}'
 ```
 
-persona-api verifies that token **locally** against keyring's JWKS. It never calls
-keyring at request time, and it cannot ask keyring anything about an account — including
-whether a profile exists. See [docs/architecture.md](docs/architecture.md).
+keyring mints a token for whatever audience it is asked for, so there is nothing to set up
+on keyring's side. In particular persona-api needs **no** entry in keyring's
+`KEYRING_SERVICE_TOKENS`: that only admits services to keyring's `/v1/internal` endpoints,
+and persona-api never calls them.
+
+persona-api verifies that token **locally** against keyring's JWKS, using `keyring-client`
+— the verifier every service in the family shares, which lives in keyring's repository at
+`clients/python`. `make install` expects that repository checked out beside this one, as
+`../Keyring-api`. persona-api never calls keyring at request time, and it cannot ask
+keyring anything about an account — including whether a profile exists. See
+[docs/architecture.md](docs/architecture.md).
 
 ## The shape of the API
 

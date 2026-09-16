@@ -79,8 +79,13 @@ class NoteStore:
         source: Source,
         asserted_by: str,
         pinned: bool = False,
+        max_pinned: int | None = None,
     ) -> Note:
         """Record one note.
+
+        ``max_pinned`` is this write's pin ceiling. When omitted the constructor value
+        stands; when passed it wins for this write, so two concurrent requests can have
+        different ceilings.
 
         Raises:
             CredentialRefusedError: if the body looks like a credential.
@@ -91,9 +96,17 @@ class NoteStore:
         refuse_if_credential(text)
         now = self._clock.now()
         note_id = new_note_id()
+        pinned_cap = self._max_pinned if max_pinned is None else max_pinned
 
         def do_write(connection: sqlite3.Connection) -> Note:
-            self._check_caps(connection, account_id, profile, adding_pinned=pinned, adding=True)
+            self._check_caps(
+                connection,
+                account_id,
+                profile,
+                adding_pinned=pinned,
+                adding=True,
+                max_pinned=pinned_cap,
+            )
             seq = _next_seq(connection)
             connection.execute(
                 f"INSERT INTO notes ({COLUMNS}) "  # noqa: S608
@@ -207,8 +220,12 @@ class NoteStore:
         body: str | None = None,
         kind: NoteKind | None = None,
         pinned: bool | None = None,
+        max_pinned: int | None = None,
     ) -> Note:
         """Change the parts of a note that are named, leaving the rest alone.
+
+        ``max_pinned`` is this write's pin ceiling. When omitted the constructor value
+        stands; when passed it wins for this write.
 
         Raises:
             NoteNotFoundError: no live note by that id in this persona.
@@ -219,6 +236,7 @@ class NoteStore:
         if text is not None:
             refuse_if_credential(text)
         now = self._clock.now()
+        pinned_cap = self._max_pinned if max_pinned is None else max_pinned
 
         def write(connection: sqlite3.Connection) -> Note:
             existing = connection.execute(
@@ -244,7 +262,14 @@ class NoteStore:
                 return _note_of(existing)
 
             if new_pinned and not existing["pinned"]:
-                self._check_caps(connection, account_id, profile, adding_pinned=True, adding=False)
+                self._check_caps(
+                    connection,
+                    account_id,
+                    profile,
+                    adding_pinned=True,
+                    adding=False,
+                    max_pinned=pinned_cap,
+                )
 
             connection.execute(
                 "UPDATE notes SET body = ?, kind = ?, pinned = ?, source = ?, asserted_by = ?,"
@@ -323,7 +348,8 @@ class NoteStore:
             (account_id, profile, include_forgotten),
         )
 
-    def _check_caps(
+    # PLR0913: connection, identity, and the three caps this write is asking for.
+    def _check_caps(  # noqa: PLR0913
         self,
         connection: sqlite3.Connection,
         account_id: str,
@@ -331,6 +357,7 @@ class NoteStore:
         *,
         adding_pinned: bool,
         adding: bool,
+        max_pinned: int,
     ) -> None:
         """Refuse a write that would pass a cap, inside the caller's transaction."""
         if adding:
@@ -349,8 +376,8 @@ class NoteStore:
                 " AND pinned = 1 AND forgotten_at IS NULL",
                 (account_id, profile),
             ).fetchone()["total"]
-            if held >= self._max_pinned:
-                msg = f"at most {self._max_pinned} pinned notes per persona"
+            if held >= max_pinned:
+                msg = f"at most {max_pinned} pinned notes per persona"
                 raise LimitExceededError(msg)
 
     def _index(self, connection: sqlite3.Connection, seq: int, text: str) -> None:

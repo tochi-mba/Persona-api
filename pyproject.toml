@@ -18,9 +18,11 @@ dependencies = [
     "cryptography>=43.0",
     "fastapi>=0.115",
     "httpx>=0.27",
+    "keyring-client",
     "pydantic>=2.9",
     "pydantic-settings>=2.5",
     "pyjwt>=2.9",
+    "settings-client",
     "structlog>=24.4",
     "uvicorn[standard]>=0.30",
 ]
@@ -224,6 +226,11 @@ source_modules = ["persona_api.api", "persona_api.auth", "persona_api.domain"]
 forbidden_modules = ["persona_api.storage", "sqlite3"]
 allow_indirect_imports = true
 
+# Everything this service asks of keyring -- and every rule by which it believes the
+# answer -- lives in one package that can be read in a sitting. The rules themselves are the
+# family's, in keyring_client, and that library is named here as well as httpx and jwt: it
+# also carries a client for keyring's internal credential endpoints, which nothing in this
+# service has any reason to call, and importing it anywhere else is one line.
 [[tool.importlinter.contracts]]
 name = "Talking to keyring stays behind the auth adapter"
 type = "forbidden"
@@ -235,5 +242,40 @@ source_modules = [
     "persona_api.domain",
     "persona_api.storage",
 ]
-forbidden_modules = ["jwt", "httpx"]
+forbidden_modules = ["jwt", "httpx", "keyring_client"]
+# core.config is left off on purpose: it validates PERSONA_SETTINGS_API_TOKEN with
+# keyring_client.check_service_token, the same 32-character rule settings-api enforces,
+# rather than a copy that could drift.
 allow_indirect_imports = true
+
+# settings-client owns caching, revalidation, single-flight and outage behaviour. Reading
+# it from a call site would re-implement those four, slightly wrong, and would present a
+# user token to settings-api without the one module that knows how to degrade. The
+# container constructs the source through build_preference_source, which is the intended
+# path, so only direct imports are refused. core.config is listed because it validates
+# the service token with keyring_client.check_service_token rather than importing this
+# client to do it.
+[[tool.importlinter.contracts]]
+name = "Talking to settings-api stays behind the preferences module"
+type = "forbidden"
+source_modules = [
+    "persona_api.api",
+    "persona_api.auth",
+    "persona_api.personas",
+    "persona_api.memory",
+    "persona_api.events",
+    "persona_api.domain",
+    "persona_api.storage",
+    "persona_api.core.config",
+    "persona_api.core.container",
+    "persona_api.core.clock",
+    "persona_api.core.context",
+    "persona_api.core.logging",
+    "persona_api.core.version",
+]
+forbidden_modules = ["settings_client"]
+allow_indirect_imports = true
+
+[tool.uv.sources]
+keyring-client = { git = "https://github.com/tochi-mba/Keyring-api", subdirectory = "clients/python", tag = "keyring-client-v0.1.0" }
+settings-client = { git = "https://github.com/tochi-mba/Settings-api", subdirectory = "clients/python", tag = "settings-client-v0.1.0" }

@@ -1,66 +1,59 @@
-"""Believing a keyring token, and the six ways of refusing one.
+"""Believing a keyring token, and the one way of refusing one.
 
-This mirrors ``Keyring-api/src/keyring_api/accounts/signing.py`` lines 113-135
-deliberately and almost line for line. The two services have to agree about what a valid
-token is, and the cheapest way to keep them agreeing is for the verifying half to be a
-recognisable copy of the minting half rather than an independent re-derivation of it.
+Every rule about the token itself belongs to :class:`keyring_client.TokenVerifier`, which
+every service in the family shares and which is tested against keyring's own signer in the
+keyring repository: the algorithm pinned to RS256 and never read from the header, the
+issuer pinned, every claim keyring sets required, expiry checked against the injected clock
+rather than PyJWT's wall clock, and one refusal for all of it. The verifying half has to
+agree with the minting half about what a valid token is, and one shared copy of the rules is
+the cheapest way to keep six services agreeing with keyring rather than with each other.
 
-## The algorithm list is fixed, and is never read from the token
+What is left here is what only this service decides.
 
-``algorithms=["RS256"]``. Leaving it open is the classic JWT failure and it comes in two
-flavours, both of which have a test here:
+## The audience is exactly ``persona``
 
-* ``alg: none`` -- a token with no signature at all, which a library that trusts the
-  header will happily accept as unsigned-and-therefore-fine.
-* HS256 signed with the **public** key. The public key is published at a URL designed to
-  be fetched by anybody, so if the verifier will accept a symmetric algorithm then the
-  verifying key is also a forging key.
+:class:`~keyring_client.ExactAudience`, not a family. persona-api has no scopes and no
+compartments -- a token is either for this service or it is not -- so ``persona.work`` is
+refused exactly as ``media-tool`` is. The name comes from ``PERSONA_AUDIENCE``.
 
-## Expiry is checked against the injected clock, not PyJWT's
+## The vocabulary is this service's own
 
-``verify_exp`` is turned off and the check is done here. That is the codebase invariant
--- nothing reads the wall clock directly -- and it is what makes the rule testable at
-all: with PyJWT doing it, a test could only ever assert that a token minted now is valid
-now. The comparison is ``>=``, so a token is refused *at* its expiry rather than during
-the second it names.
+The library's errors become domain errors at this boundary, so nothing above ``auth``
+knows a library was involved, and an import-linter contract keeps it that way.
 
-## Every refusal is the same refusal
-
-Bad signature, wrong audience, wrong issuer, expired, missing claim, malformed, no
-``kid``: one :class:`~persona_api.domain.errors.AuthenticationError`, one message, one
-response body. A caller holding a forged token learns nothing from the difference, and
-the specific reason goes to the log where only an operator reads it.
-
-This also keeps PyJWT's exception types out of the layers above -- which an import-linter
-contract forbids, and which would otherwise make swapping the JWT library a change to
-the HTTP handlers.
-
-keyring being *unreachable* is deliberately not one of these. See :mod:`.jwks`.
+* Every refusal is :class:`~persona_api.domain.errors.AuthenticationError` carrying
+  :data:`BAD_TOKEN`, whichever rule refused -- bad signature, wrong audience, wrong issuer,
+  expired, missing claim, malformed, or a key id keyring does not publish. A caller holding
+  a forged token learns nothing from the difference, and the specific reason goes to the
+  log where only an operator reads it.
+* Keyring being unreachable is :class:`~persona_api.domain.errors.KeyringUnreachableError`
+  carrying :data:`KEYS_UNAVAILABLE`, and becomes a 503 rather than a 401. Nothing is wrong
+  with the caller's token, and telling them it was rejected sends them to re-authenticate
+  against a service that is not answering. Fixed text, never the exception's own message:
+  that carries the URL, and a URL can carry credentials.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-import jwt
+from keyring_client import ALGORITHM, REQUIRED_CLAIMS, ExactAudience
+from keyring_client import AuthenticationError as TokenRefusedError
+from keyring_client import KeyringUnreachableError as KeysUnavailableError
+from keyring_client import TokenVerifier as KeyringTokenVerifier
 
+from persona_api.auth.jwks import BAD_TOKEN, KEYS_UNAVAILABLE
 from persona_api.core.logging import get_logger
-from persona_api.domain.errors import AuthenticationError
+from persona_api.domain.errors import AuthenticationError, KeyringUnreachableError
 
 if TYPE_CHECKING:
     from persona_api.auth.jwks import JwksClient
     from persona_api.core.clock import Clock
 
+__all__ = ["ALGORITHM", "REQUIRED_CLAIMS", "TokenVerifier", "VerifiedCaller"]
+
 logger = get_logger(__name__)
-
-ALGORITHM = "RS256"
-
-REQUIRED_CLAIMS = ["exp", "iat", "iss", "sub", "aud"]
-"""Exactly what keyring puts in a token. No email, no roles, no profile list."""
-
-BAD_TOKEN = "the token was not accepted"  # noqa: S105 -- a message, not a credential
-"""One message for every verification failure. Which one it was is nobody's business."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,70 +77,44 @@ class VerifiedCaller:
     makes it the trustworthy half of a field's provenance.
     """
 
+    token: str = field(repr=False)
+    """The bearer string, presented to settings-api as the user token.
+
+    Held so a request can ask for this person's settings without reading the
+    Authorization header a second time. ``repr=False`` because a log line or an error
+    that rendered the caller would otherwise print a live credential.
+    """
+
 
 class TokenVerifier:
     """Turns a bearer token into a :class:`VerifiedCaller`, or refuses it."""
 
     def __init__(self, *, jwks: JwksClient, issuer: str, audience: str, clock: Clock) -> None:
-        self._jwks = jwks
-        self._issuer = issuer
-        self._audience = audience
-        self._clock = clock
+        # This service's logger rather than the library's standard-library fallback, so a
+        # refusal's reason lands in the structured, redacted log with the request id on it.
+        self._verifier = KeyringTokenVerifier(jwks=jwks, issuer=issuer, clock=clock, logger=logger)
+        # Built here rather than per request, so an audience that could never match -- empty,
+        # untrimmed, or containing the compartment separator -- stops the service starting
+        # instead of quietly refusing every token it is ever sent.
+        self._audience = ExactAudience(audience)
 
     async def verify(self, token: str) -> VerifiedCaller:
         """Check a token keyring minted and say who it is for.
 
         Raises:
-            AuthenticationError: expired, wrong audience, wrong issuer, unsigned,
-                tampered with, or missing a required claim -- undifferentiated.
-            KeyringUnreachableError: the keys could not be fetched. Not the caller's
-                fault and deliberately not their error.
-        """
-        kid = self._key_id(token)
-        key = await self._jwks.key_for(kid)
-
-        try:
-            claims = jwt.decode(
-                token,
-                key,
-                algorithms=[ALGORITHM],
-                audience=self._audience,
-                issuer=self._issuer,
-                options={
-                    "require": REQUIRED_CLAIMS,
-                    # Checked below against the injected clock instead. PyJWT would read
-                    # the wall clock, which breaks the codebase invariant and makes the
-                    # expiry rule untestable without waiting.
-                    "verify_exp": False,
-                },
-            )
-        except jwt.InvalidTokenError as exc:
-            logger.info("token_rejected", error_type=type(exc).__name__)
-            raise AuthenticationError(BAD_TOKEN) from exc
-
-        if self._clock.now().timestamp() >= float(claims["exp"]):
-            logger.info("token_rejected", error_type="ExpiredSignatureError")
-            raise AuthenticationError(BAD_TOKEN)
-
-        return VerifiedCaller(account_id=str(claims["sub"]), audience=str(claims["aud"]))
-
-    def _key_id(self, token: str) -> str:
-        """Read the ``kid`` out of the unverified header.
-
-        Unverified because it has to be: the header names the key, so it is read before
-        there is anything to verify with. Nothing else from this header is used, and the
-        ``alg`` in it is ignored entirely -- see the module docstring.
+            AuthenticationError: expired, wrong audience, wrong issuer, unsigned, tampered
+                with, missing a required claim, or naming a key keyring does not publish --
+                undifferentiated.
+            KeyringUnreachableError: the keys could not be fetched and no usable copy is
+                held. Not the caller's fault and deliberately not their error.
         """
         try:
-            header = jwt.get_unverified_header(token)
-        except jwt.InvalidTokenError as exc:
-            logger.info("token_rejected", error_type=type(exc).__name__)
+            verified = await self._verifier.verify(token, audience=self._audience)
+        except TokenRefusedError as exc:
             raise AuthenticationError(BAD_TOKEN) from exc
+        except KeysUnavailableError as exc:
+            raise KeyringUnreachableError(KEYS_UNAVAILABLE) from exc
 
-        kid = header.get("kid")
-        if not isinstance(kid, str) or not kid:
-            # keyring always sets one. A token without it was not minted by keyring,
-            # and guessing which key to try would be doing an attacker's search for it.
-            logger.info("token_rejected", error_type="MissingKeyId")
-            raise AuthenticationError(BAD_TOKEN)
-        return kid
+        return VerifiedCaller(
+            account_id=verified.account_id, audience=verified.audience, token=token
+        )

@@ -17,6 +17,8 @@ WORKDIR /app
 # Dependencies first, in their own layer: application edits then rebuild in seconds
 # rather than re-resolving the whole tree.
 COPY pyproject.toml uv.lock README.md ./
+# git: uv fetches the family's client packages from tagged git sources.
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN uv sync --no-install-project --no-dev
 
 COPY src/ src/
@@ -34,17 +36,17 @@ VOLUME ["/var/lib/persona"]
 USER persona
 
 ENV PERSONA_HOST=0.0.0.0 \
-    PERSONA_PORT=8002 \
+    PERSONA_PORT=8004 \
     PERSONA_DATABASE_PATH=/var/lib/persona/persona.db \
     PERSONA_LOG_FORMAT=json
 
-EXPOSE 8002
+EXPOSE 8004
 
 # PERSONA_KEYRING_ISSUER and PERSONA_KEYRING_JWKS_URL are deliberately NOT set here.
 # They name the keyring this deployment trusts, and baking a default into the image is
 # how a container ends up trusting the wrong one.
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8002/healthy', timeout=4).status == 200 else 1)"
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8004/healthy', timeout=4).status == 200 else 1)"
 
 CMD ["persona-api"]
