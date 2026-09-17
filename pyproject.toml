@@ -3,15 +3,15 @@ name = "persona-api"
 version = "0.1.0"
 description = "An assistant's model of itself: fields, notes, and the provenance of both."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [{ name = "tochi-mba" }]
 keywords = ["fastapi", "persona", "memory", "assistant", "mcp"]
 classifiers = [
     "Private :: Do Not Upload",
     "Framework :: FastAPI",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Typing :: Typed",
 ]
 dependencies = [
@@ -57,7 +57,7 @@ packages = ["src/persona_api"]
 # --------------------------------------------------------------------------------------
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
@@ -144,7 +144,7 @@ convention = "google"
 # Types
 # --------------------------------------------------------------------------------------
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 files = ["src", "tests"]
 strict = true
 warn_unreachable = true

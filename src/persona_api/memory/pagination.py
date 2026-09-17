@@ -15,13 +15,13 @@ final page hands back a cursor for an empty one.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Generic, TypeVar
+from typing import TypeVar
 
 T = TypeVar("T")
 
 
 @dataclass(frozen=True, slots=True)
-class Page(Generic[T]):
+class Page[T]:
     """Rows, and where to carry on from."""
 
     items: list[T]

@@ -2,7 +2,7 @@
 
 # A plain slim base. This service makes one kind of outbound call -- fetching keyring's
 # public keys -- and writes one small file. There is nothing else in it to go wrong.
-FROM python:3.11-slim-bookworm
+FROM python:3.12-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
