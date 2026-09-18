@@ -126,7 +126,7 @@ class TestTheSharedRulesAreWiredIn:
 
 class TestAudience:
     @pytest.mark.parametrize(
-        "audience", ["media-tool", "persona.work", "personas", "persona-api", "user"]
+        "audience", ["downstream-tool", "persona.work", "personas", "persona-api", "user"]
     )
     async def test_a_token_for_anything_but_exactly_persona_is_refused(
         self, verifier: TokenVerifier, audience: str
@@ -183,7 +183,7 @@ class TestOneUndifferentiatedRefusal:
         # rather than asserted one at a time, because the property is that there is exactly
         # one message.
         refusals = [
-            mint(audience="media-tool"),
+            mint(audience="downstream-tool"),
             mint(audience="persona.work"),
             mint(issuer=OTHER_ISSUER),
             mint(omit="sub"),

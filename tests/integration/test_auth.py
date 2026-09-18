@@ -39,7 +39,7 @@ class TestRefusals:
     @pytest.mark.parametrize(
         "overrides",
         [
-            pytest.param({"audience": "media-tool"}, id="another-services-audience"),
+            pytest.param({"audience": "downstream-tool"}, id="another-services-audience"),
             pytest.param({"audience": "persona.work"}, id="a-compartment-this-service-lacks"),
             pytest.param({"issuer": OTHER_ISSUER}, id="another-issuer"),
             pytest.param({"omit": "sub"}, id="a-missing-claim"),
@@ -116,7 +116,7 @@ class TestEveryRefusalIsIdentical:
         expired = token_for(keyring, ttl_seconds=1)
         clock.advance(2)
         refusals = [
-            token_for(keyring, audience="media-tool"),
+            token_for(keyring, audience="downstream-tool"),
             token_for(keyring, audience="persona.work"),
             token_for(keyring, issuer=OTHER_ISSUER),
             token_for(keyring, omit="sub"),

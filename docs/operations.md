@@ -34,7 +34,7 @@ The four that a deployment must actually think about:
 | --- | --- |
 | `PERSONA_KEYRING_ISSUER` | Pinned against the token's `iss`. Must match keyring's `KEYRING_ISSUER` **exactly**. A mismatch refuses every token, identically and unhelpfully — which is by design, and is the first thing to check when nothing authenticates. |
 | `PERSONA_KEYRING_JWKS_URL` | Where the verifying key comes from. Reachable from this process, over a network you trust to the same degree you trust keyring. |
-| `PERSONA_AUDIENCE` | Pinned against the token's `aud`, exactly: `persona.work` is refused like `media-tool`. keyring mints a token for whatever audience it is asked for, so nothing needs setting there — in particular persona-api needs **no** entry in keyring's `KEYRING_SERVICE_TOKENS`, which only admits services to keyring's `/v1/internal` endpoints. |
+| `PERSONA_AUDIENCE` | Pinned against the token's `aud`, exactly: `persona.work` is refused like `example-tool`. keyring mints a token for whatever audience it is asked for, so nothing needs setting there — in particular persona-api needs **no** entry in keyring's `KEYRING_SERVICE_TOKENS`, which only admits services to keyring's `/v1/internal` endpoints. |
 | `PERSONA_DATABASE_PATH` | See the next section. |
 
 ### settings-api

@@ -14,7 +14,7 @@ What is left here is what only this service decides.
 
 :class:`~keyring_client.ExactAudience`, not a family. persona-api has no scopes and no
 compartments -- a token is either for this service or it is not -- so ``persona.work`` is
-refused exactly as ``media-tool`` is. The name comes from ``PERSONA_AUDIENCE``.
+refused exactly as ``example-tool`` is. The name comes from ``PERSONA_AUDIENCE``.
 
 ## The vocabulary is this service's own
 
