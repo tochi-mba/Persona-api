@@ -83,74 +83,81 @@ class Container:
         """
         clock = clock or SystemClock()
         database = Database(settings.database_path)
-        migrate(database, now=clock.now())
+        # Everything from here on can refuse to start -- a migration that fails, a
+        # policy file that says something the catalogue rejects -- and a refusal
+        # must not leave the database it just opened for the garbage collector.
+        try:
+            migrate(database, now=clock.now())
 
-        events = SqlEventLog(database=database, clock=clock, max_entries=settings.max_events)
-        personas = PersonaStore(database=database)
-        fields = FieldStore(
-            database=database,
-            clock=clock,
-            events=events,
-            limits=ValueLimits(
-                max_bytes=settings.max_field_value_bytes,
-                max_depth=settings.max_value_depth,
-                max_list_items=settings.max_value_list_items,
-                max_object_keys=settings.max_value_object_keys,
-            ),
-            max_fields=settings.max_fields_per_persona,
-            max_pinned=settings.max_pinned_fields,
-        )
-        notes = NoteStore(
-            database=database,
-            clock=clock,
-            events=events,
-            max_body_chars=settings.max_note_body_chars,
-            max_notes=settings.max_notes_per_persona,
-            max_pinned=settings.max_pinned_notes,
-        )
-        # Constructed, not contacted. The first token that needs a key, or the first health
-        # check, is what provokes the first fetch; a persona service that will not start
-        # because keyring is down is a persona service that cannot report keyring being down.
-        jwks = JwksClient(
-            url=settings.keyring_jwks_url,
-            clock=clock,
-            cache_seconds=settings.jwks_cache_seconds,
-            min_refetch_seconds=settings.jwks_min_refetch_seconds,
-            timeout_seconds=settings.keyring_http_timeout_seconds,
-            # The shared client's diagnostics -- a refused key id, a fetch that failed -- land
-            # in this service's structured, redacted log rather than the standard library's.
-            logger=get_logger("persona_api.auth.jwks"),
-        )
-        # Same rule for settings-api: constructed here, contacted on the first request that
-        # needs somebody's own caps. An empty URL keeps today's behaviour exactly.
-        chosen = preferences if preferences is not None else build_preference_source(settings)
+            events = SqlEventLog(database=database, clock=clock, max_entries=settings.max_events)
+            personas = PersonaStore(database=database)
+            fields = FieldStore(
+                database=database,
+                clock=clock,
+                events=events,
+                limits=ValueLimits(
+                    max_bytes=settings.max_field_value_bytes,
+                    max_depth=settings.max_value_depth,
+                    max_list_items=settings.max_value_list_items,
+                    max_object_keys=settings.max_value_object_keys,
+                ),
+                max_fields=settings.max_fields_per_persona,
+                max_pinned=settings.max_pinned_fields,
+            )
+            notes = NoteStore(
+                database=database,
+                clock=clock,
+                events=events,
+                max_body_chars=settings.max_note_body_chars,
+                max_notes=settings.max_notes_per_persona,
+                max_pinned=settings.max_pinned_notes,
+            )
+            # Constructed, not contacted. The first token that needs a key, or the first health
+            # check, is what provokes the first fetch; a persona service that will not start
+            # because keyring is down is a persona service that cannot report keyring being down.
+            jwks = JwksClient(
+                url=settings.keyring_jwks_url,
+                clock=clock,
+                cache_seconds=settings.jwks_cache_seconds,
+                min_refetch_seconds=settings.jwks_min_refetch_seconds,
+                timeout_seconds=settings.keyring_http_timeout_seconds,
+                # The shared client's diagnostics -- a refused key id, a fetch that failed -- land
+                # in this service's structured, redacted log rather than the standard library's.
+                logger=get_logger("persona_api.auth.jwks"),
+            )
+            # Same rule for settings-api: constructed here, contacted on the first request that
+            # needs somebody's own caps. An empty URL keeps today's behaviour exactly.
+            chosen = preferences if preferences is not None else build_preference_source(settings)
 
-        return cls(
-            settings=settings,
-            clock=clock,
-            database=database,
-            events=events,
-            personas=personas,
-            fields=fields,
-            notes=notes,
-            persona_service=PersonaService(
+            return cls(
+                settings=settings,
+                clock=clock,
+                database=database,
+                events=events,
                 personas=personas,
                 fields=fields,
                 notes=notes,
-                events=events,
-                clock=clock,
-                settings=settings,
-            ),
-            jwks=jwks,
-            verifier=TokenVerifier(
+                persona_service=PersonaService(
+                    personas=personas,
+                    fields=fields,
+                    notes=notes,
+                    events=events,
+                    clock=clock,
+                    settings=settings,
+                ),
                 jwks=jwks,
-                issuer=settings.keyring_issuer,
-                audience=settings.audience,
-                clock=clock,
-            ),
-            preferences=chosen,
-            started_monotonic=clock.monotonic(),
-        )
+                verifier=TokenVerifier(
+                    jwks=jwks,
+                    issuer=settings.keyring_issuer,
+                    audience=settings.audience,
+                    clock=clock,
+                ),
+                preferences=chosen,
+                started_monotonic=clock.monotonic(),
+            )
+        except BaseException:
+            database.close()
+            raise
 
     @property
     def uptime_seconds(self) -> float:
@@ -158,7 +165,11 @@ class Container:
 
     async def aclose(self) -> None:
         """Shut everything down in dependency order."""
-        await self.preferences.aclose()
-        await self.jwks.aclose()
-        # Last: everything above may still want to write on its way out.
-        await self.database.aclose()
+        try:
+            await self.preferences.aclose()
+            await self.jwks.aclose()
+        finally:
+            # Last: everything above may still want to write on its way out. And in a
+            # `finally`, because a close above that raises must not leave the database
+            # open -- an unclosed connection outlives the error that caused it.
+            await self.database.aclose()
