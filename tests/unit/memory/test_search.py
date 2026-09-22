@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 
 import pytest
 
@@ -38,11 +39,16 @@ HOSTILE = [
 
 
 @pytest.fixture
-def index() -> sqlite3.Connection:
+def index() -> Iterator[sqlite3.Connection]:
     connection = sqlite3.connect(":memory:")
     connection.execute("CREATE VIRTUAL TABLE t USING fts5(text, tokenize='porter unicode61')")
     connection.execute("INSERT INTO t(text) VALUES ('I prefer concise answers and dry humour')")
-    return connection
+    try:
+        yield connection
+    finally:
+        # Closed rather than left for the collector: Python 3.13 reports an unclosed
+        # connection as a ResourceWarning, and this suite treats warnings as failures.
+        connection.close()
 
 
 class TestNothingIsEverAFiveHundred:

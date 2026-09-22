@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import sqlite3
+import threading
+import warnings
 from typing import TYPE_CHECKING
 
 import pytest
 
 from persona_api.storage.database import (
+    CONNECT_PRAGMAS,
     DATABASE_FILE_MODE,
     SIDECARS,
     Database,
@@ -264,3 +268,35 @@ class TestSerialization:
         row = await db.fetch_one("SELECT n FROM counter")
         assert row is not None
         assert row["n"] == 50
+
+
+class TestARefusedOpenLeaksNothing:
+    """A startup check that refuses the connection must close it.
+
+    The file handle and the WAL sidecars would otherwise stay open in a process that is
+    refusing to start, and Python 3.13 reports exactly that as a ResourceWarning at garbage
+    collection -- which this suite treats as a failure in whichever test happens to be
+    running when the collector gets round to it. The worker thread that opened the
+    connection is given back the same way.
+    """
+
+    async def test_opening_a_database_refuses_when_the_pragma_does_not_take(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "persona_api.storage.database.CONNECT_PRAGMAS",
+            tuple(p for p in CONNECT_PRAGMAS if "foreign_keys" not in p),
+        )
+        threads_before = threading.active_count()
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", ResourceWarning)
+            with pytest.raises(StorageError, match="foreign keys are not enabled"):
+                Database(tmp_path / "unsafe.db")
+
+        # Anything the refusal dropped is collected here, inside the filter that would turn
+        # an unclosed connection into an error rather than a line on stderr.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", ResourceWarning)
+            gc.collect()
+        assert threading.active_count() == threads_before, "the worker thread was given back"
