@@ -7,7 +7,7 @@ much of it: one process, one file, one outbound dependency.
 
 | | |
 | --- | --- |
-| Python | 3.11 or 3.12 (both are in CI) |
+| Python | 3.12 or 3.13 (both are in CI; 3.12 is the floor) |
 | Disk | one SQLite file plus its `-wal`/`-shm` sidecars |
 | Network, inbound | one port, behind a TLS-terminating proxy |
 | Network, outbound | keyring's JWKS URL, and settings-api when `PERSONA_SETTINGS_API_BASE_URL` is set |
@@ -183,13 +183,28 @@ a container ends up trusting the wrong one.
 ## Verifying a deployment
 
 ```bash
-make smoke      # against a persona-api already running on :8099
+KEYRING_URL=http://127.0.0.1:8001 PERSONA_URL=http://127.0.0.1:8004 \
+KEYRING_EMAIL=you@example.com KEYRING_PASSWORD='...' \
+make smoke
 ```
 
 `scripts/smoke.py` mints a real token against a real keyring, creates a persona, sets a
-field, writes a note, recalls both, forgets one, confirms it is gone from recall but
-present with `include_forgotten`, and confirms a second account sees none of it. It exits
-non-zero on the first failure, so it doubles as a deployment check.
+field, writes a note, recalls both, forgets one, and confirms it is gone from recall but
+present with `include_forgotten`. With `KEYRING_EMAIL_2` and `KEYRING_PASSWORD_2` set to a
+second account it also confirms that account sees none of it; without them the isolation
+step is skipped and says so. It exits non-zero on the first failure, so it doubles as a
+deployment check.
+
+| Variable | Default | What it is |
+| --- | --- | --- |
+| `KEYRING_URL` | `http://127.0.0.1:8001` | The keyring whose tokens this deployment trusts. |
+| `PERSONA_URL` | `http://127.0.0.1:8099` | The persona-api under test. `make run` serves on :8004, so set this. |
+| `KEYRING_EMAIL`, `KEYRING_PASSWORD` | none | An account that already exists in keyring. |
+| `KEYRING_EMAIL_2`, `KEYRING_PASSWORD_2` | none | A second account, for the isolation check. |
+
+Set `PERSONA_URL` for the smoke run only. It carries this service's prefix, so if it is
+exported in the shell that then starts persona-api, the service refuses to start with an
+unknown-variable error.
 
 Two refusals worth confirming by hand after any change to `domain/secrets.py`:
 
