@@ -101,9 +101,10 @@ is exactly right.
 
 ## Hostile search
 
-Parametrized over the ten strings below, each asserting a clean 200 or 422 and **never a
-500**. Measured on this exact stack before the sanitiser existed, eight of ten raised
-`OperationalError` out of FTS5:
+Parametrized over `HOSTILE` in `tests/unit/memory/test_search.py` — the ten strings
+measured on this stack before the sanitiser existed, plus more of the same shape — each
+asserting a clean 200 or 422 and **never a 500**, in the unit suite and again over HTTP.
+Eight of the ten raised `OperationalError` out of FTS5, among them:
 
 ```
 'answers"'     -> unterminated string
@@ -143,15 +144,14 @@ transaction" a fact rather than a comment.
 
 ## Concurrency
 
-`database_held` and `park_behind_the_database` are copied from
-`Keyring-api/tests/unit/accounts/test_roles_store.py`. They occupy the database's only
-worker thread so a test can line several calls up and know that **none of them has read
-anything yet** — which is the interleaving in which a check made outside a transaction
-reads stale state and every writer goes ahead.
+The races are run with `asyncio.gather` against the real database, whose one worker thread
+is what makes each transaction indivisible. Ten concurrent writes of one field key make
+one field (`tests/unit/memory/test_fields.py`); concurrent transactions all land and a
+concurrent read-modify-write loses no update (`tests/unit/storage/test_database.py`); and
+every cap holds under a burst of writers (see Caps).
 
-Two writers to the same field key: one row, a revision bump, no lost write. The assertion
-is on the **outcome**, never the mechanism, so it would still mean something if the single
-connection were ever replaced by a pool.
+The assertion is on the **outcome**, never the mechanism, so it would still mean something
+if the single connection were ever replaced by a pool.
 
 ## Restart
 
