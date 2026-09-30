@@ -192,11 +192,11 @@ Conventions, inherited and worth repeating:
 - The tests mint real RS256 tokens and serve the JWKS through `keyring_client.testing`, the
   family's shared fake, by way of `tests/fakes/keyring.py`: a real key, an
   `httpx.MockTransport`, no network in the suite and no `unittest.mock`.
-- `keyring-client` is a path dependency on `../Keyring-api/clients/python`, so `make install`
-  needs the keyring repository checked out beside this one.
-- `settings-client` is a path dependency on `../Settings-api/clients/python`, for the same
-  reason. Unset `PERSONA_SETTINGS_API_BASE_URL` keeps today's behaviour; the client is
-  imported either way.
+- `keyring-client` and `settings-client` come from tagged git sources in
+  `[tool.uv.sources]` (`keyring-client-v0.1.0` and `settings-client-v0.1.0`), so
+  `make install` fetches them from GitHub and needs no sibling checkout. To take a new
+  client release, move the tag and run `uv lock`. Unset `PERSONA_SETTINGS_API_BASE_URL`
+  keeps today's behaviour; the settings client is imported either way.
 
 ## Commit conventions
 
