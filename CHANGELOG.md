@@ -73,6 +73,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `make matrix` ran 3.11 and 3.12. 3.11 is below `requires-python`, so uv refused it and
+  the target failed before a test ran; it now runs 3.12 and 3.13, which is what CI runs.
 - A token whose `iat` was ahead of this host's wall clock -- keyring's clock running slightly
   fast -- was refused, because PyJWT's own `iat` check read the wall clock. Only expiry is
   judged now, and on the injected clock.
