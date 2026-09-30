@@ -34,10 +34,11 @@ check: lint type imports test ## Everything CI runs, on one interpreter
 
 matrix: ## Run the tests on every Python CI runs, because one is not enough
 	@# `check` uses whichever Python is default here, and a green run on it is not a
-	@# green CI run. Coverage in particular differs between versions: until 3.12,
-	@# isinstance() against a runtime-checkable Protocol executed property getters, so a
-	@# property with no test of its own looked covered on 3.11 and did not on 3.12.
-	for version in 3.11 3.12; do \
+	@# green CI run. The family workflow tests on 3.12 and 3.13, and they differ: 3.13 is
+	@# the first to report a sqlite connection collected while still open, which
+	@# filterwarnings=error turns into a failure that 3.12 never shows. 3.11 is below
+	@# requires-python, so uv refuses it before a single test runs.
+	for version in 3.12 3.13; do \
 		echo "== python $$version =="; \
 		$(UV) run --python $$version pytest --cov -q || exit 1; \
 	done
