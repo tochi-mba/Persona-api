@@ -31,12 +31,14 @@ contract rather than decoration -- see [Invariants](#invariants).
 | `make install` | Create the venv and install everything. |
 | `make check` | **The gate.** Format check, lint, strict types, layering contracts, tests at 100% branch coverage. Run before every commit. |
 | `make matrix` | The tests on every Python CI runs. A green `check` is one interpreter's opinion; coverage genuinely differs between versions. Run before pushing. |
-| `make test` | Tests only. |
+| `make test` | Tests only, with coverage enforced. |
 | `make fmt` | Format and auto-fix. |
+| `make lint` / `make type` / `make imports` | The three halves of `check` that are not tests. |
 | `make run` | Serve on :8004 with reload. Docs at `/docs`. |
 | `make cov` | HTML coverage report in `htmlcov/`. |
-| `make schema` | Regenerate the checked-in schema snapshot after changing a migration. |
-| `make smoke` | End-to-end check against a persona-api already running on :8099. See `scripts/smoke.py`. |
+| `make schema` | Regenerate `storage/schema.sql` after changing a migration. Commit the diff with it. |
+| `make smoke` | End-to-end check against a running persona-api and a running keyring. It needs a keyring account; see [docs/operations.md](docs/operations.md#verifying-a-deployment). |
+| `make docker` | Build the image. |
 
 Always run `make check` rather than a bare `pytest` -- piping any of these to `head`/`tail`
 in a shell chain masks the exit code, which is how a broken commit slips through.
