@@ -1,6 +1,6 @@
 # The HTTP API
 
-Twenty operations. Every one is shaped as a tool call, because that is what it will
+Twenty-one operations. Every one is shaped as a tool call, because that is what it will
 become — one operation, one clear name, arguments a model can fill without reading prose.
 
 `operation_id`s are a **public contract**: they become MCP tool names, so renaming one
@@ -28,7 +28,8 @@ curl -sX POST "$KEYRING/v1/auth/service-token" \
 
 persona-api verifies it **locally** against keyring's JWKS — it never calls keyring at
 request time. The token's `sub` is the only identity this service gets; its `aud` becomes
-`asserted_by` on everything you write, and must be exactly `persona`. See
+`asserted_by` on everything you write, and must be exactly this deployment's
+`PERSONA_AUDIENCE` — `persona` unless the operator changed it. See
 [ADR-0007](adr/0007-local-jwks-verification.md).
 
 Two failures worth telling apart:
@@ -179,6 +180,11 @@ Every list endpoint accepts these, and they combine. All are index-backed.
 | `limit` | default 20, max 100 | default 20, max 100 |
 | `cursor` | ✓ | ✓ |
 
+The default page is `PERSONA_RECALL_DEFAULT_LIMIT` (20), or a lower
+`persona.recall_default_limit` the person chose in settings-api when that is configured.
+The maximum is `PERSONA_RECALL_MAX_LIMIT` (100); asking for more is a 422, never a quietly
+shorter page.
+
 **`since`/`until` name different columns on purpose.** A field is current state, so you ask
 when it last changed. A note is something that happened, so you ask when it happened — and
 editing an old note does not make it today's news. Each list is ordered by the same column
@@ -225,7 +231,8 @@ different answers.
 
 ## Export and events
 
-`GET .../export` returns the card, every live field and every live note in one response.
+`GET .../export` returns the card, every live field and every live note in one response
+(with `?include_forgotten=true`, the forgotten ones too).
 The two halves page **independently** (`field_cursor`, `note_cursor`), because a persona
 can be long in fields and short in notes.
 
@@ -253,10 +260,10 @@ Every failure is RFC 9457 problem+json:
 | 401 | The token was not accepted. Same body every time. |
 | 404 | No such persona, field or note — **identical** to the answer for one belonging to another account. There is no 403 in this service. |
 | 409 | You already have a persona for that profile. |
-| 422 | A limit was broken (the message names which), a value looked like a credential (the message names keyring), a cursor was not ours, or a search had no words in it. |
+| 422 | A limit was broken (the message names which), a value looked like a credential (the message names keyring), a cursor was not ours, a search had no words in it, a `limit` was above the maximum, or the request itself was malformed — an invented body field, a bad profile or a bad query parameter. |
 | 429 | A cap: personas per account, fields or notes per persona, or pinned entries. |
 | 500 | A bug. The detail is withheld deliberately — quote the `request_id`. |
-| 503 | keyring is unreachable. Not your token. |
+| 503 | keyring is unreachable, so the token could not be checked — not your token. Or settings-api refused this service, which is a deployment misconfiguration; the body is fixed text either way. |
 
 Request bodies are `extra="forbid"`: an invented field is a 422, not a silent ignore.
 That is what stops an `asserted_by` in a body from looking like it worked.
@@ -273,5 +280,7 @@ That is what stops an `asserted_by` in a body from looking like it worked.
 | Note body | 4000 chars | `PERSONA_MAX_NOTE_BODY_CHARS` |
 
 **Pinned is a token budget, not a preference** — every pinned entry goes into the
-assistant's prompt on every turn. Forgetting a row frees its slot; the caps count live
+assistant's prompt on every turn. When settings-api is configured, a person may set lower
+pin caps for themselves (`persona.max_pinned_fields`, `persona.max_pinned_notes`); nobody
+can raise them above these. Forgetting a row frees its slot; the caps count live
 rows.
