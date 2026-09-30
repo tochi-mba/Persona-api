@@ -81,8 +81,8 @@ and persona-api never calls them.
 
 persona-api verifies that token **locally** against keyring's JWKS, using `keyring-client`
 — the verifier every service in the family shares, which lives in keyring's repository at
-`clients/python`. `make install` expects that repository checked out beside this one, as
-`../Keyring-api`. persona-api never calls keyring at request time, and it cannot ask
+`clients/python`. `make install` fetches it from a tagged git source, so no sibling
+checkout is needed. persona-api never calls keyring at request time, and it cannot ask
 keyring anything about an account — including whether a profile exists. See
 [docs/architecture.md](docs/architecture.md).
 

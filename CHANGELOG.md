@@ -40,8 +40,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   own. The rules are the ones persona-api already applied -- RS256 only, the issuer pinned,
   the audience pinned to exactly `persona`, every claim keyring sets required, expiry on the
   injected clock, one undifferentiated `401` -- and they are now tested once, in the keyring
-  repository, against keyring's own signer. `make install` needs that repository checked out
-  beside this one.
+  repository, against keyring's own signer. It is taken from a tagged git source, so
+  `make install` needs no keyring checkout beside this one.
 - **Breaking:** a token whose `kid` is not in the key set keyring has just served is refused
   with `401`, where it used to be `503`. Keyring answered, and its answer was that no key by
   that name is its own: a fact about the token, which "retry shortly" could never fix. A key
