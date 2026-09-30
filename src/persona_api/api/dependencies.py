@@ -27,7 +27,8 @@ from persona_api.auth.verifier import VerifiedCaller
 from persona_api.core.container import Container
 from persona_api.core.context import set_account_id
 from persona_api.core.preferences import Preferences
-from persona_api.domain.errors import AuthenticationError
+from persona_api.domain.errors import AuthenticationError, InvalidProfileError
+from persona_api.domain.personas import normalize_profile
 
 bearer_scheme = HTTPBearer(
     auto_error=False,
@@ -81,9 +82,25 @@ async def get_current_caller(
 CurrentCallerDep = Annotated[VerifiedCaller, Depends(get_current_caller)]
 
 
-async def get_preferences(container: ContainerDep, caller: CurrentCallerDep) -> Preferences:
-    """This caller's caps: their own, or the deployment's when settings-api is off."""
-    return await container.preferences.for_token(caller.token)
+async def get_preferences(
+    container: ContainerDep, caller: CurrentCallerDep, request: Request
+) -> Preferences:
+    """This caller's caps, for the profile the path names: their own, or the deployment's.
+
+    ``persona.recall_default_limit`` is profile-scoped in settings-api, so a read that
+    names no profile gets the catalogue default rather than what this person chose for
+    the persona they are paging through. The profile is taken from the path rather than
+    declared as a parameter, so no route gains a ``profile`` query parameter in its
+    contract, and a route with no profile in its path -- ``recall_everywhere`` -- asks
+    for none. A name that cannot be stored is not sent: the route refuses it on its own.
+    """
+    profile: str | None = request.path_params.get("profile")
+    if profile is not None:
+        try:
+            profile = normalize_profile(profile)
+        except InvalidProfileError:
+            profile = None
+    return await container.preferences.for_token(caller.token, profile)
 
 
 PreferencesDep = Annotated[Preferences, Depends(get_preferences)]
