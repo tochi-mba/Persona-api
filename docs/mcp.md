@@ -105,7 +105,7 @@ optional expansion a caller has to remember to ask for.
 
 **Bounded payloads.** Nothing returns an unbounded list. Fields and notes are capped per
 persona, personas per account, pinned entries per persona, and every list takes a `limit`
-(default 20, max 100) with cursor pagination. Responses stay a predictable size in a
+(default 20 or the person's own lower choice, max 100) with cursor pagination. Responses stay a predictable size in a
 context window.
 
 **One error shape.** Every failure is RFC 9457 problem+json with a `request_id`, so a model
