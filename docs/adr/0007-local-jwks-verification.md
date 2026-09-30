@@ -110,9 +110,10 @@ clock. Three rules about keys changed with the library:
 - **A failed fetch is not retried within `jwks_min_refetch_seconds`**, the floor an unknown
   `kid` already had, so a keyring that is down is not asked once per inbound request.
 - **Keys held from a successful fetch are served through an outage** for up to a day past
-  `jwks_cache_seconds`. `/healthy` fetches when it holds nothing fresh, and reports an outage
-  survived on cached keys as `ok` with `reachable: false` rather than taking a working
-  instance out of rotation.
+  `jwks_cache_seconds`. The readiness check fetches when it holds nothing fresh, and reports
+  an outage survived on cached keys as `ok` with `reachable: false` rather than taking a
+  working instance out of rotation. That check has since moved from `/healthy`, which is now
+  liveness only and asks keyring nothing, to `/ready`.
 
 The import-linter contract now forbids `keyring_client` outside `persona_api.auth`, as well
 as `jwt` and `httpx`.
