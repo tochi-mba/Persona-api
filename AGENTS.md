@@ -68,13 +68,14 @@ Four contracts, all earned, and a fifth for the second remote:
 3. **SQL stays behind the stores.** `api`, `auth` and `domain` may not import `storage`
    or `sqlite3`. A router that could write a query is a router that will eventually
    contain one.
-4. **Talking to keyring stays behind the auth adapter.** Nothing but `auth` may import
-   `keyring_client`, `jwt` or `httpx`. This is the one worth explaining: it keeps
+4. **Talking to keyring stays behind the auth adapter.** Nothing but `auth` and `core` may
+   import `keyring_client`, `jwt` or `httpx`. This is the one worth explaining: it keeps
    *everything this service asks of keyring, and every rule by which it believes an
    answer*, inside one package that can be read in a sitting. The rules themselves are the
    family's, in `keyring_client` -- change them there, never by re-implementing one here.
-   `core.config` is left off that list so it can validate `PERSONA_SETTINGS_API_TOKEN`
-   with `keyring_client.check_service_token` rather than a copy of the 32-character rule.
+   `core` is left off the contract so `core.config` can validate
+   `PERSONA_SETTINGS_API_TOKEN` with `keyring_client.check_service_token` rather than a
+   copy of the 32-character rule; nothing else in `core` imports it.
 5. **Talking to settings-api stays behind the preferences module.** Nothing but
    `core.preferences` may import `settings_client`. The container constructs the source
    through that module. Reading the client from a call site would re-implement caching,
@@ -113,8 +114,11 @@ deliberately and say why in the commit message -- do not work around it.
    syntax and raw user input hits it: eight of ten plausible search strings are a 500
    without this. Word tokens are extracted, quoted, and joined with ` OR `.
 9. **The FTS index is written by the store, in the same transaction as the row**, through
-   one private `_index()` helper. Not external-content tables, not triggers -- see
-   `memory/search.py`. A test asserts the table and the index agree after every operation.
+   each store's private `_index()` and `_unindex()` helpers. Not external-content tables,
+   and triggers only for the persona-delete cascade, which has no application code path
+   to hook -- `storage/migrations/0001_initial.sql` says why.
+   `tests/unit/memory/test_index_integrity.py` asserts the table and the index agree after
+   every operation.
 10. **Caps are enforced inside the transaction that does the write.** A caller that counts
     and then writes has a window in between, and there is an `asyncio.gather` test per cap
     that would find it.
@@ -164,8 +168,9 @@ Conventions, inherited and worth repeating:
    real `description`, and `responses` for every failure a caller can provoke.
 3. Register the router in `ROUTERS` in `api/routers/__init__.py`. That is the only wiring
    step; problem+json, request ids, the account binding and access logging are inherited.
-4. Take `CurrentAccountDep` and address every store through that account id. **Never
-   accept an account id as a parameter**, and never read `asserted_by` from a body.
+4. Take `CurrentCallerDep` and address every store through `caller.account_id`. **Never
+   accept an account id as a parameter**, and never read `asserted_by` from a body -- it
+   is the caller's verified audience.
 5. Raise domain errors. Map any new one in `_DOMAIN_STATUS` in `api/errors.py` -- never
    build an error response in a handler.
 6. Tests: an integration test per behaviour, an isolation test per verb, and extend the

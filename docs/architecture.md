@@ -49,9 +49,10 @@ will eventually contain one — and the first one will be the one that forgets t
 `account_id` in the `WHERE` clause.
 
 **4. Talking to keyring stays behind the auth adapter.** Nothing outside
-`persona_api.auth` may import `keyring_client`, `jwt` or `httpx`, except `core.config`,
-which validates `PERSONA_SETTINGS_API_TOKEN` with `keyring_client.check_service_token`
-rather than a copy of the 32-character rule.
+`persona_api.auth` may import `keyring_client`, `jwt` or `httpx`. `core` is left off the
+contract so that `core.config` can validate `PERSONA_SETTINGS_API_TOKEN` with
+`keyring_client.check_service_token` rather than a copy of the 32-character rule; nothing
+else in `core` imports it.
 
 persona-api's entire relationship with keyring is "verify this signed token against those
 published keys". That is a small thing, and it should stay small. The rules for it are the
@@ -125,12 +126,15 @@ log is read by more people, and kept for longer, than the rows it describes.
 pagination. Three things here are not obvious:
 
 **The FTS index is written by the store, explicitly, inside the same transaction as the
-row**, through one private `_index()` helper called from every write path. Not
-external-content tables — those require issuing `'delete'` commands carrying the *old*
-values on every update, and missing one silently corrupts the index. Not triggers — those
-would have to render a JSON value to searchable text in SQL. The explicit helper creates
-its own bug class, which is why index integrity gets its own test class, asserting that the
-table and the index agree after create, revise, forget and persona delete.
+row**, through each store's private `_index()` and `_unindex()` helpers, called from every
+write path. Not external-content tables — those require issuing `'delete'` commands
+carrying the *old* values on every update, and missing one silently corrupts the index.
+Not triggers for writes — those would have to render a JSON value to searchable text in
+SQL. The one exception is deleting a persona: its fields and notes go by
+`ON DELETE CASCADE`, which has no application code path to hook, so two `AFTER DELETE`
+triggers remove their index rows. The explicit helpers create their own bug class, which
+is why index integrity gets its own test module, asserting that the table and the index
+agree after create, revise, forget and persona delete.
 
 **Query sanitisation is mandatory.** FTS5 `MATCH` has its own syntax and raw user input
 hits it: measured on this stack, eight of ten plausible search strings are a 500.
@@ -181,8 +185,8 @@ Routers raise domain errors and let `api/errors.py` decide what that means over 
 the only place in the service that maps a failure to a status code, which is what keeps the
 handlers thin.
 
-Every `/v1` route takes `CurrentAccountDep` and addresses every store through that account
-id. **No route accepts an account id as a parameter**, and no route reads `asserted_by`
+Every `/v1` route takes `CurrentCallerDep` and addresses every store through its
+`account_id`. **No route accepts an account id as a parameter**, and no route reads `asserted_by`
 from a request body — it comes from the verified token. That is not a rule handlers
 remember; it is the only way the dependency makes an account available.
 

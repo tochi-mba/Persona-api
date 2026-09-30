@@ -121,8 +121,8 @@ tokens is a clean 422, not a crash.
 ## Index integrity
 
 The full-text index is written by the store, explicitly, in the same transaction as the
-row — not by external-content tables and not by triggers, both for reasons in
-[docs/architecture.md](architecture.md). That choice creates its own bug class: an index
+row — not by external-content tables, and by triggers only for the persona-delete cascade,
+for reasons in [docs/architecture.md](architecture.md). That choice creates its own bug class: an index
 that silently disagrees with the table.
 
 So it gets its own class, asserting the table and the index agree after **create, revise,
