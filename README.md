@@ -86,6 +86,15 @@ checkout is needed. persona-api never calls keyring at request time, and it cann
 keyring anything about an account — including whether a profile exists. See
 [docs/architecture.md](docs/architecture.md).
 
+### Per-person settings, optionally
+
+Set `PERSONA_SETTINGS_API_BASE_URL` and `PERSONA_SETTINGS_API_TOKEN` together and each
+request reads its caller's `persona` namespace from
+[settings-api](https://github.com/tochi-mba/Settings-api): a person may lower their own
+default page size and pin caps, never raise them above this deployment. Unset, which is the
+default, every person gets this deployment's configuration.
+[docs/operations.md](docs/operations.md#settings-api) has the details.
+
 ## The shape of the API
 
 Every endpoint is shaped as a tool call, because that is what it will become: one
@@ -109,12 +118,14 @@ Full reference: [docs/api.md](docs/api.md).
 | Document | What it covers |
 | --- | --- |
 | [AGENTS.md](AGENTS.md) | How work is done here. Read before your first edit. |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Setup, the loop, and what a change needs before review. |
 | [docs/architecture.md](docs/architecture.md) | The layers, the contracts, and why each exists. |
 | [docs/api.md](docs/api.md) | Every endpoint, every filter, every failure. |
 | [docs/mcp.md](docs/mcp.md) | How to front this with MCP without turning memories into instructions. |
 | [docs/operations.md](docs/operations.md) | Deploying, backing up, and the hardening checklist. |
 | [docs/testing.md](docs/testing.md) | What each test group defends, and why it exists. |
-| [docs/adr/](docs/adr/) | The decisions, and what would change our minds. |
+| [docs/adr/](docs/adr/README.md) | The decisions, and what would change our minds. |
+| [CHANGELOG.md](CHANGELOG.md) | What changed. |
 
 ## Licence
 
