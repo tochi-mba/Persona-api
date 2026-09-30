@@ -183,7 +183,10 @@ because the outage is the case most services forget. A person may narrow a pin o
 cap and never raise it; a 401/403 from settings-api is a 503 with fixed text that names
 neither the grant nor the URL; a value of the wrong type leaves the configuration and
 logs the key, never the value. Two accounts on one store are held to different pin
-ceilings because the cap is a call argument, not a constructor-frozen integer.
+ceilings because the cap is a call argument, not a constructor-frozen integer. The
+profile-scoped recall default is tested through the real `HttpSettingsClient` over an
+`httpx.MockTransport` that answers per profile as settings-api does, because the shared
+fake ignores `profile` and could not tell a request that sent it from one that did not.
 
 `default_persona`, `log_values`, `erasure_mode` and `grace_days` are unread on purpose:
 this service has no default-persona resolution and no sweeper, and faking either would

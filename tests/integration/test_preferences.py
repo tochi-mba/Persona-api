@@ -9,9 +9,11 @@ from __future__ import annotations
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
+import httpx
 import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
+from settings_client import HttpSettingsClient
 from settings_client.testing import FakeSettingsClient
 
 from persona_api.api.app import create_app
@@ -49,10 +51,49 @@ class TokenKeyedFake(FakeSettingsClient):
     def seed_token(self, user_token: str, values: Mapping[str, Any]) -> None:
         self.by_token[user_token] = dict(values)
 
-    async def resolve(self, namespace: str, *, user_token: str) -> Any:
+    async def resolve(self, namespace: str, *, user_token: str, profile: str | None = None) -> Any:
         if user_token in self.by_token:
             self._values[namespace] = dict(self.by_token[user_token])
-        return await super().resolve(namespace, user_token=user_token)
+        return await super().resolve(namespace, user_token=user_token, profile=profile)
+
+
+class ProfileScopedSettingsApi:
+    """settings-api's internal read, answering the way its exclusive profile scope does.
+
+    ``persona.recall_default_limit`` is profile-scoped: a read that names the profile gets
+    the value stored for it, and a read that names none gets the catalogue default, because
+    no profile's value is chosen for it. The pin ceilings are account-scoped and come back
+    the same either way. Driven through the real :class:`HttpSettingsClient`, so what is
+    tested is the request persona-api actually sends.
+    """
+
+    def __init__(self, by_profile: Mapping[str, int]) -> None:
+        self.by_profile = dict(by_profile)
+        self.profiles_asked: list[str | None] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        profile = request.url.params.get("profile")
+        self.profiles_asked.append(profile)
+        recall = self.by_profile.get(profile, 20) if profile else 20
+        rules = {"on_unavailable": "use_default"}
+        return httpx.Response(
+            200,
+            headers={"ETag": '"acct.1"'},
+            json={
+                "namespace": "persona",
+                "revision": 1,
+                "settings": {
+                    "recall_default_limit": recall,
+                    "max_pinned_fields": 20,
+                    "max_pinned_notes": 20,
+                },
+                "fallbacks": {
+                    "recall_default_limit": {"default": 20, **rules},
+                    "max_pinned_fields": {"default": 20, **rules},
+                    "max_pinned_notes": {"default": 20, **rules},
+                },
+            },
+        )
 
 
 @pytest.fixture
@@ -204,3 +245,67 @@ class TestTwoAccounts:
             headers=auth(bob),
         )
         assert fourth.status_code == 429
+
+
+class TestAProfileScopedDefault:
+    """``recall_default_limit`` is one value per keyring profile, so the profile goes with the read.
+
+    A persona is one per profile, and the path names it. A read that left the profile off
+    would get the catalogue default back rather than the person's own value for that
+    profile, and their choice would never be seen.
+    """
+
+    @pytest.fixture
+    def settings_api(self) -> ProfileScopedSettingsApi:
+        return ProfileScopedSettingsApi({"work": 2, "personal": 3})
+
+    @pytest.fixture
+    def chosen(self, settings_api: ProfileScopedSettingsApi) -> HttpSettingsClient:
+        return HttpSettingsClient(
+            base_url="http://settings.test",
+            service_token="s" * 40,
+            transport=httpx.MockTransport(settings_api),
+        )
+
+    async def test_the_default_page_is_the_persons_own_for_that_profile(
+        self, client: AsyncClient, token: str, settings_api: ProfileScopedSettingsApi
+    ) -> None:
+        for profile in ("work", "personal"):
+            for index in range(4):
+                written = await client.put(
+                    f"/v1/personas/{profile}/fields/key{index}",
+                    json={"description": "n", "value": str(index)},
+                    headers=auth(token),
+                )
+                assert written.status_code == 200, written.text
+
+        work = await client.get("/v1/personas/work/fields", headers=auth(token))
+        personal = await client.get("/v1/personas/personal/fields", headers=auth(token))
+
+        assert len(work.json()["fields"]) == 2
+        assert len(personal.json()["fields"]) == 3
+        assert {"work", "personal"} <= set(settings_api.profiles_asked)
+
+    async def test_the_profile_is_asked_for_in_the_form_it_is_stored_in(
+        self, client: AsyncClient, token: str, settings_api: ProfileScopedSettingsApi
+    ) -> None:
+        response = await client.get("/v1/personas/%20Work%20/fields", headers=auth(token))
+
+        assert response.status_code == 404
+        assert settings_api.profiles_asked == ["work"]
+
+    async def test_a_read_across_every_profile_names_none(
+        self, client: AsyncClient, token: str, settings_api: ProfileScopedSettingsApi
+    ) -> None:
+        response = await client.get("/v1/recall?q=anything", headers=auth(token))
+
+        assert response.status_code == 200, response.text
+        assert settings_api.profiles_asked == [None]
+
+    async def test_a_profile_that_cannot_be_stored_is_not_sent_and_is_still_refused(
+        self, client: AsyncClient, token: str, settings_api: ProfileScopedSettingsApi
+    ) -> None:
+        response = await client.get("/v1/personas/-bad-/fields", headers=auth(token))
+
+        assert response.status_code == 422
+        assert settings_api.profiles_asked == [None]

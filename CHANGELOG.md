@@ -73,6 +73,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **settings-client 0.2.0**, and the profile goes with every read. `persona.recall_default_limit`
+  is profile-scoped in settings-api, and 0.1.0 could not name a profile, so every read got the
+  catalogue default and a person's own recall default was never applied. Requests under
+  `/v1/personas/{profile}/...` now ask for that profile (in its stored form);
+  `GET /v1/recall` spans every profile and asks for none.
 - `scripts/smoke.py` read its target from `PERSONA_URL`, a name under this service's own
   prefix: exported in the shell that starts persona-api, it made the service refuse to start
   with an unknown-variable error. It is now `SMOKE_PERSONA_API_URL`, matching user-api's

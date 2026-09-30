@@ -50,6 +50,13 @@ keyring minted. The grant there needs `audience_prefix` equal to `PERSONA_AUDIEN
 `max_pinned_fields` and `max_pinned_notes`; they cannot raise them above this
 deployment, and `PERSONA_RECALL_MAX_LIMIT` remains the hard cap on a named page size.
 
+`recall_default_limit` is one value per keyring profile in settings-api, so the request
+asks for the profile its path names (`/v1/personas/{profile}/...`, in the stored,
+lowercased form). `GET /v1/recall` searches every profile and names none, so it gets the
+catalogue default rather than any one profile's choice. The two pin ceilings are one value
+per account and come back the same either way. This needs settings-client 0.2.0 or later:
+0.1.0 had no way to name a profile, and a person's own recall default was never read.
+
 If settings-api has never answered, those three fall back to the configuration. If it
 refuses this service (401/403), the request is **503** with a fixed body that names
 neither the grant nor the URL.

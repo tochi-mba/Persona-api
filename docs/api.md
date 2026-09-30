@@ -181,7 +181,9 @@ Every list endpoint accepts these, and they combine. All are index-backed.
 | `cursor` | ✓ | ✓ |
 
 The default page is `PERSONA_RECALL_DEFAULT_LIMIT` (20), or a lower
-`persona.recall_default_limit` the person chose in settings-api when that is configured.
+`persona.recall_default_limit` the person chose in settings-api for the profile in the path
+when that is configured. `recall_everywhere` names no profile, so no one profile's choice
+applies to it.
 The maximum is `PERSONA_RECALL_MAX_LIMIT` (100); asking for more is a 422, never a quietly
 shorter page.
 

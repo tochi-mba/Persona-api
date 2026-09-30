@@ -7,7 +7,7 @@ the pin ceilings a write is held to. Nothing is read at startup, and with no set
 configured every person gets the configuration as it stands -- exactly what persona-api
 did before it read anybody's settings at all.
 
-Three rules shape it.
+Four rules shape it.
 
 **A person may narrow a ceiling and never raise it.** The deployment's caps on pinned
 fields, pinned notes and the default recall page still apply on top of what somebody
@@ -20,6 +20,11 @@ to a default, and when settings-api has never answered, the configuration is tha
 default. ``default_persona``, ``log_values``, ``erasure_mode`` and ``grace_days`` are in
 the catalogue and unread here: there is no default-persona resolution and no sweeper, so
 honouring them would be faking a mechanism this service does not have.
+
+**The profile goes with the read.** ``recall_default_limit`` is one value per keyring
+profile in settings-api, so a read that named none would get the catalogue default back
+and never the person's own. The caller passes the profile the path names; a route that
+spans every profile names none.
 
 **A refusal is not an outage.** settings-api answering 401 or 403 means this service is
 misconfigured -- a missing grant, a wrong token -- and serving defaults would hide that
@@ -71,11 +76,13 @@ class Preferences:
 class PreferenceSource(Protocol):
     """Where a request's preferences come from."""
 
-    async def for_token(self, user_token: str | None, /) -> Preferences:
-        """The preferences of whoever ``user_token`` belongs to.
+    async def for_token(self, user_token: str | None, /, profile: str | None = None) -> Preferences:
+        """The preferences of whoever ``user_token`` belongs to, in ``profile``.
 
         ``None`` is no caller at all -- a path that does not authenticate -- and gets the
-        configuration.
+        configuration. ``profile`` is the keyring profile the request is about, stored
+        form; ``recall_default_limit`` is one value per profile, so without it the person's
+        own value cannot be asked for and settings-api answers with the catalogue default.
 
         Raises:
             PreferencesUnavailableError: settings-api refused this service, or cannot
@@ -103,7 +110,10 @@ class DeploymentPreferences:
     def __init__(self, settings: Settings) -> None:
         self._preferences = deployment_preferences(settings)
 
-    async def for_token(self, _user_token: str | None, /) -> Preferences:
+    async def for_token(
+        self, _user_token: str | None, /, profile: str | None = None
+    ) -> Preferences:
+        del profile
         return self._preferences
 
     async def aclose(self) -> None:
@@ -118,12 +128,12 @@ class SettingsApiPreferences:
         self._settings = settings
         self._deployment = deployment_preferences(settings)
 
-    async def for_token(self, user_token: str | None, /) -> Preferences:
+    async def for_token(self, user_token: str | None, /, profile: str | None = None) -> Preferences:
         if user_token is None:
             return self._deployment
 
         try:
-            resolved = await self._client.resolve(NAMESPACE, user_token=user_token)
+            resolved = await self._client.resolve(NAMESPACE, user_token=user_token, profile=profile)
         except SettingsUnavailable:
             # Never answered, so not even settings-api's own defaults are known. The
             # configuration stands in for every key that falls back.
