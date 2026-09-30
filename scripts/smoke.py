@@ -13,7 +13,7 @@ Usage:
     # keyring on :8001, which needs no configuration for persona-api
     # persona-api on :8099 with PERSONA_KEYRING_ISSUER matching keyring's issuer
     KEYRING_URL=http://127.0.0.1:8001 \\
-    PERSONA_URL=http://127.0.0.1:8099 \\
+    SMOKE_PERSONA_API_URL=http://127.0.0.1:8099 \\
     KEYRING_EMAIL=you@example.com KEYRING_PASSWORD='...' \\
     uv run python scripts/smoke.py
 
@@ -31,7 +31,7 @@ from typing import Any
 import httpx
 
 KEYRING_URL = os.environ.get("KEYRING_URL", "http://127.0.0.1:8001")
-PERSONA_URL = os.environ.get("PERSONA_URL", "http://127.0.0.1:8099")
+PERSONA_URL = os.environ.get("SMOKE_PERSONA_API_URL", "http://127.0.0.1:8099")
 TIMEOUT = 10.0
 
 PROFILE = f"smoke-{uuid.uuid4().hex[:8]}"

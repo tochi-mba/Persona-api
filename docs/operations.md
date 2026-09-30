@@ -185,7 +185,7 @@ a container ends up trusting the wrong one.
 ## Verifying a deployment
 
 ```bash
-KEYRING_URL=http://127.0.0.1:8001 PERSONA_URL=http://127.0.0.1:8004 \
+KEYRING_URL=http://127.0.0.1:8001 SMOKE_PERSONA_API_URL=http://127.0.0.1:8004 \
 KEYRING_EMAIL=you@example.com KEYRING_PASSWORD='...' \
 make smoke
 ```
@@ -200,13 +200,15 @@ deployment check.
 | Variable | Default | What it is |
 | --- | --- | --- |
 | `KEYRING_URL` | `http://127.0.0.1:8001` | The keyring whose tokens this deployment trusts. |
-| `PERSONA_URL` | `http://127.0.0.1:8099` | The persona-api under test. `make run` serves on :8004, so set this. |
+| `SMOKE_PERSONA_API_URL` | `http://127.0.0.1:8099` | The persona-api under test. `make run` serves on :8004, so set this. |
 | `KEYRING_EMAIL`, `KEYRING_PASSWORD` | none | An account that already exists in keyring. |
 | `KEYRING_EMAIL_2`, `KEYRING_PASSWORD_2` | none | A second account, for the isolation check. |
 
-Set `PERSONA_URL` for the smoke run only. It carries this service's prefix, so if it is
-exported in the shell that then starts persona-api, the service refuses to start with an
-unknown-variable error.
+The URL is `SMOKE_PERSONA_API_URL` rather than `PERSONA_URL` because every
+`PERSONA_`-prefixed variable the service does not recognise is a startup error: a smoke
+variable under that prefix, exported in the shell that then starts persona-api, would stop
+it starting. None of the names above carries the prefix, and
+`tests/unit/test_smoke_script.py` keeps it that way.
 
 Two refusals worth confirming by hand after any change to `domain/secrets.py`:
 
