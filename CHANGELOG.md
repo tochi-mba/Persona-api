@@ -60,7 +60,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a key. The check is `degraded`, and the response `503`, only when no token could be
   verified: an outage survived on cached keys is `ok`, with `reachable: false` and a reason
   saying so. A fresh process whose keyring is down is therefore `degraded` from its first
-  health check, and the image's `HEALTHCHECK` reports it unhealthy until keyring answers.
+  readiness check. The image's `HEALTHCHECK` calls `/healthy`, so it stays healthy.
 - A `PERSONA_AUDIENCE` that is empty, has surrounding whitespace or contains a dot stops the
   service starting, instead of letting it run and refuse every token it is sent.
 - The import-linter contract that keeps keyring behind `persona_api.auth` now forbids
