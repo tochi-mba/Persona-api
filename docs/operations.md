@@ -147,8 +147,10 @@ service's — but with `reachable: false` and a `reason` saying tokens are being
 against cached keys, so an operator finds out before the grace runs out.
 
 `degraded` returns HTTP 503 so a load balancer takes the instance out; the body shape is
-identical either way. The image's `HEALTHCHECK` wants a 200, so a container started while
-keyring is down reports unhealthy until keyring answers.
+identical either way. The image's `HEALTHCHECK` calls `/healthy`, which does no I/O and
+never fails, so a container started while keyring is down stays healthy and is not
+restarted; point the load balancer at `/ready` to hold traffic back until keyring
+answers.
 
 ## Logs
 
