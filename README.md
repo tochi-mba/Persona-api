@@ -1,5 +1,7 @@
 # persona-api
 
+A REX Technologies product. Site: <https://tochi-mba.github.io/Persona-api/>
+
 An assistant needs somewhere to keep a model of *itself* — what it is called, how it
 speaks, what it has learned about the person it serves — and to get that back later.
 Today that lives in a prompt somebody retypes, or nowhere. This is the somewhere.

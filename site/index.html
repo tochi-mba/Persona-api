@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en" class="no-js">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Persona-api is where an assistant keeps a model of itself: named fields and free-text notes it writes for itself, each returned with who asserted it. One persona per profile, searchable, no secrets, no admin surface. A REX Technologies service in the LUCY family.">
+<meta name="robots" content="index,follow">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#080A09">
+<meta property="og:title" content="Persona-api — the assistant's model of itself — REX Technologies">
+<meta property="og:description" content="Fields the assistant defines, notes it writes, both with provenance attached and both pinnable into the identity block it loads at the start of a turn.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://tochi-mba.github.io/Persona-api/">
+<meta name="twitter:card" content="summary">
+<link rel="canonical" href="https://tochi-mba.github.io/Persona-api/">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<script>document.documentElement.classList.replace("no-js","js");</script>
+<noscript><style>@media(max-width:760px){.site-nav{display:flex!important;position:static!important;flex-direction:column}.menu-button{display:none!important}}</style></noscript>
+<title>Persona-api — the assistant's model of itself — REX Technologies</title>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<div class="ambient ambient-one" aria-hidden="true"></div>
+<div class="ambient ambient-two" aria-hidden="true"></div>
+
+<header class="site-header">
+  <div class="container nav-wrap">
+    <a class="brand" href="#top" aria-label="Persona-api, by REX Technologies">
+      <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M10 25V7h7a5.5 5.5 0 0 1 0 11h-7"/><circle cx="23" cy="24" r="2.5"/></svg></span>
+      <span class="brand-lockup"><span class="brand-company">REX Technologies</span><span class="brand-name">Persona-api</span></span>
+    </a>
+    <button class="menu-button" type="button" aria-expanded="false" aria-controls="site-nav"><span class="sr-only">Toggle navigation</span><span></span><span></span></button>
+    <nav id="site-nav" class="site-nav" aria-label="Primary navigation">
+      <a href="#how">How it works</a>
+      <a href="#api">The API</a>
+      <a href="#install">Run it</a>
+      <a href="#safety">The line</a>
+      <a href="#docs">Docs</a>
+      <a class="nav-github" href="https://github.com/tochi-mba/Persona-api">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <section class="hero container" id="top">
+    <div class="hero-copy">
+      <p class="eyebrow signal">Persona store · part of the LUCY family</p>
+      <h1>The assistant's model of <span>itself</span>, with its provenance attached.</h1>
+      <p class="hero-lede">
+        An assistant needs somewhere to keep what it is called, how it speaks, and what it has
+        learned about the person it serves, and to get that back later. Today that lives in a
+        prompt somebody retypes, or nowhere. Persona-api is the somewhere: a small identity card
+        per profile, plus the fields and notes the assistant writes for itself.
+      </p>
+      <div class="hero-actions">
+        <a class="button button-primary" href="#install">Run it on your machine</a>
+        <a class="button button-secondary" href="https://github.com/tochi-mba/Persona-api">Source on GitHub</a>
+      </div>
+      <div class="hero-meta">
+        <span>Python 3.12+</span>
+        <span>FastAPI on :8004</span>
+        <span>Authenticates against keyring</span>
+        <span>MIT licensed</span>
+      </div>
+    </div>
+    <pre class="console" aria-label="Setting a field and reading the identity block"><code><span class="you">PUT</span> /v1/personas/work/fields/forms_of_address
+{"description": "What to call them, and what never to call them.",
+ "value": ["Alex", "never 'Alexander'"], "source": "owner", "pinned": true}
+
+<span class="k">200</span> {"key": "forms_of_address", "value_type": "list", "revision": 1,
+     "source": "owner", "asserted_by": "persona", "pinned": true, …}
+
+<span class="you">GET</span> /v1/personas/work
+<span class="k">200</span> {"persona": {"profile": "work", "display_name": "Ada", …},
+     "fields": [ <span class="s">pinned only</span> ], "notes": [ <span class="s">pinned only</span> ],
+     "field_count": 24, "note_count": 311}</code></pre>
+  </section>
+
+  <section class="trust-strip">
+    <div class="container trust-grid">
+      <div><strong>Data, never instructions</strong><span>Every field and note comes back with who asserted it.</span></div>
+      <div><strong>No secrets</strong><span>Credential-shaped input is refused, naming keyring. No off switch.</span></div>
+      <div><strong>No administrative surface</strong><span>Only the account in the verified token reads its own rows.</span></div>
+      <div><strong>One persona per profile</strong><span>A work assistant and a home assistant are different people.</span></div>
+    </div>
+  </section>
+
+  <section class="section container" id="how">
+    <div class="section-heading">
+      <p class="eyebrow signal">How it works</p>
+      <h2>Two kinds of knowledge the assistant writes for itself, and a card to pin them to.</h2>
+      <p>The schema is not ours. The assistant invents the keys it needs as it learns what is worth recording about itself, and the service keeps the record honest about where each entry came from.</p>
+    </div>
+    <div class="steps">
+      <div class="step">
+        <span class="step-number">01</span>
+        <h3>Fields are structured and named</h3>
+        <p>A typed attribute the assistant defines and fills: <code>voice</code>, <code>forms_of_address</code>, <code>things_i_got_wrong</code>. It invents the key, writes a description saying what the field is for, and sets a JSON value. Keys normalise to snake_case; <code>describe_persona_schema</code> says what already exists so a fourth name for one thing is never invented.</p>
+      </div>
+      <div class="step">
+        <span class="step-number">02</span>
+        <h3>Notes are free text</h3>
+        <p>What happened, what was noticed, what to do differently: an <code>episode</code>, an <code>observation</code> or a <code>lesson</code>. Notes accrue rather than replace, which is the difference between a note and a field.</p>
+      </div>
+      <div class="step">
+        <span class="step-number">03</span>
+        <h3>Both carry provenance, both can be pinned</h3>
+        <p><code>asserted_by</code> is the audience of the verified token that made the write: server-derived, never read from the body. <code>source</code> is the writer's own claim: <code>owner</code>, <code>assistant</code> or <code>service</code>. Pinned entries come back in the identity block an assistant loads at the start of a turn.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section container" id="api">
+    <div class="section-heading">
+      <p class="eyebrow signal">The API</p>
+      <h2>Every endpoint is shaped as a tool call, because that is what it will become.</h2>
+      <p>One operation, one clear name, arguments a model can fill without reading prose. The <code>operation_id</code>s are a public contract, pinned by a test. Twenty-one operations in all, counting liveness and readiness. It is a service in the <a href="https://tochi-mba.github.io/LUCY-assistant/">LUCY family</a>, and it authenticates against <a href="https://github.com/tochi-mba/Keyring-api">keyring</a>.</p>
+    </div>
+    <div class="feature-grid">
+      <div class="feature-card"><h3>Personas</h3><p><code>GET /v1/personas</code> lists yours; <code>POST</code> sets a card up front. <code>GET /v1/personas/{profile}</code> is the identity block: card, pinned fields, pinned notes and live counts. <code>PATCH</code> changes only the keys you send; <code>DELETE</code> is the one hard delete here, and it cascades.</p></div>
+      <div class="feature-card"><h3>Fields</h3><p><code>PUT /v1/personas/{profile}/fields/{key}</code> creates or replaces a field, idempotently, so a retry cannot make two. <code>GET</code> reads one or lists them, <code>DELETE</code> is a soft forget that setting the key again revives, and <code>GET …/schema</code> returns keys and descriptions with no values.</p></div>
+      <div class="feature-card"><h3>Notes</h3><p><code>POST /v1/personas/{profile}/notes</code> writes one. <code>GET</code> lists or reads, <code>PATCH</code> revises only the parts you name without moving the note in time, and <code>DELETE</code> forgets it reversibly.</p></div>
+      <div class="feature-card"><h3>Recall</h3><p><code>GET /v1/personas/{profile}/recall?q=…</code> searches one persona; <code>GET /v1/recall?q=…</code> searches every persona you own. Two ranked lists, fields and notes, never one merged ranking. Stemmed keyword search, with operators treated as words.</p></div>
+      <div class="feature-card"><h3>Export and events</h3><p><code>GET …/export</code> returns the card, every live field and every live note in one response, paged independently. <code>GET …/events</code> is the change log: what was set, revised or forgotten, by whom and when, and never a value or a body.</p></div>
+      <div class="feature-card"><h3>Health</h3><p><code>GET /healthy</code> is liveness only and never fails. <code>GET /ready</code> checks the database and keyring's keys and answers 503 when no token could be verified. Point container healthchecks at the first and load balancers at the second.</p></div>
+    </div>
+  </section>
+
+  <section class="section container" id="install">
+    <div class="section-heading">
+      <p class="eyebrow signal">Run it</p>
+      <h2>Three targets, and a token from keyring.</h2>
+      <p>You need Python 3.12 or newer and <a href="https://docs.astral.sh/uv/">uv</a>. Tokens are verified locally against keyring's JWKS through the family's shared <code>keyring-client</code>, fetched from a tagged git source, so no sibling checkout is needed.</p>
+    </div>
+    <ol class="install-steps">
+      <li>Create the virtualenv and install everything.
+        <div class="command-row"><code>make install</code><button class="copy-button" type="button" data-copy="make install">Copy</button></div>
+      </li>
+      <li>Run the gate: format, lint, strict types, import contracts, tests at 100% branch coverage.
+        <div class="command-row"><code>make check</code><button class="copy-button" type="button" data-copy="make check">Copy</button></div>
+      </li>
+      <li>Serve on :8004, with interactive docs at <code>/docs</code>.
+        <div class="command-row"><code>make run</code><button class="copy-button" type="button" data-copy="make run">Copy</button></div>
+      </li>
+      <li>Ask a running keyring for a token with the <code>persona</code> audience.
+        <div class="command-row"><code>curl -sX POST localhost:8001/v1/auth/service-token -H "Authorization: Bearer $SESSION" -H "Content-Type: application/json" -d '{"audience":"persona"}'</code><button class="copy-button" type="button" data-copy='curl -sX POST localhost:8001/v1/auth/service-token -H "Authorization: Bearer $SESSION" -H "Content-Type: application/json" -d &#39;{"audience":"persona"}&#39;'>Copy</button></div>
+      </li>
+    </ol>
+    <p class="install-note">keyring mints a token for whatever audience it is asked for, so nothing needs configuring on its side. Set <code>PERSONA_SETTINGS_API_BASE_URL</code> and <code>PERSONA_SETTINGS_API_TOKEN</code> together and each request reads its caller's <code>persona</code> namespace from settings-api: a person may lower their own page size and pin caps, never raise them. Unset, which is the default, every person gets this deployment's configuration. The <a href="https://github.com/tochi-mba/Persona-api/blob/main/docs/operations.md">operations guide</a> covers deploying, backing up and hardening.</p>
+    <p id="copy-status" class="sr-only" aria-live="polite"></p>
+  </section>
+
+  <section class="section container" id="safety">
+    <div class="section-heading">
+      <p class="eyebrow signal">The line this service does not cross</p>
+      <h2>Four rules, each of which is an ADR and at least one test.</h2>
+    </div>
+    <div class="faq">
+      <details open>
+        <summary>A persona is data, never instructions.</summary>
+        <p>An assistant that reads a web page, an email or tool output is reading untrusted text, so a store it writes from that is a prompt-injection sink. If a memory could say "always do X", anything the assistant ever read could rewrite its behaviour permanently. Every field and note is therefore returned with its provenance attached, and the MCP guide instructs the layer above to render them as third-person reported claims, never as system instructions. The API cannot enforce that; it can make the honest shape the easy one.</p>
+      </details>
+      <details>
+        <summary>No secrets in a persona.</summary>
+        <p>keyring is next door and is the place for them. People will paste an API key into "remember this". The API detects credential-shaped input and refuses it with a message naming keyring. There is no setting that disables this.</p>
+      </details>
+      <details>
+        <summary>No administrative surface.</summary>
+        <p>Every row is reachable only by the account in the verified token's <code>sub</code>. There is no admin API, no RBAC, no break-glass, and no operator endpoint that reads somebody's persona on their behalf. If you want somebody's persona, ask them.</p>
+      </details>
+      <details>
+        <summary>Provenance is partly a claim, and the API says which part it verified.</summary>
+        <p><code>asserted_by</code> is the audience of the verified token that made the write: server-derived and trustworthy. <code>source</code> is who the writer says asserted it. The server cannot tell whether a person typed it or a model inferred it, so it is labelled as a claim in the schema description rather than dressed up as a fact.</p>
+      </details>
+    </div>
+  </section>
+
+  <section class="section container" id="docs">
+    <div class="section-heading">
+      <p class="eyebrow signal">Docs</p>
+      <h2>Written for the person who has to run it.</h2>
+    </div>
+    <div class="feature-grid">
+      <a class="feature-card link" href="https://github.com/tochi-mba/Persona-api/blob/main/docs/api.md"><h3>API reference</h3><p>Every endpoint, every filter, every failure.</p></a>
+      <a class="feature-card link" href="https://github.com/tochi-mba/Persona-api/blob/main/docs/architecture.md"><h3>Architecture</h3><p>The layers, the import contracts, and why each exists.</p></a>
+      <a class="feature-card link" href="https://github.com/tochi-mba/Persona-api/blob/main/docs/mcp.md"><h3>MCP</h3><p>How to front this with MCP without turning memories into instructions.</p></a>
+      <a class="feature-card link" href="https://github.com/tochi-mba/Persona-api/blob/main/docs/operations.md"><h3>Operations</h3><p>Deploying, backing up, settings-api, and the hardening checklist.</p></a>
+      <a class="feature-card link" href="https://github.com/tochi-mba/Persona-api/blob/main/docs/testing.md"><h3>Testing</h3><p>What each test group defends, and why it exists.</p></a>
+      <a class="feature-card link" href="https://github.com/tochi-mba/Persona-api/blob/main/docs/adr/README.md"><h3>Decisions</h3><p>The architecture decision records, and what would change our minds.</p></a>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="container footer-wrap">
+    <span>© <span id="year">2026</span> REX Technologies · Persona-api</span>
+    <span>Part of the <a href="https://tochi-mba.github.io/LUCY-assistant/">LUCY family</a>. MIT licensed.</span>
+    <span class="footer-links">
+      <a href="https://github.com/tochi-mba/Persona-api/blob/main/CHANGELOG.md">What's new <span aria-hidden="true">↗</span></a>
+      <a href="#top">Back to top <span aria-hidden="true">↑</span></a>
+    </span>
+  </div>
+</footer>
+<script src="app.js" defer></script>
+</body>
+</html>
