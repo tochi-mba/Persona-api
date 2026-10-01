@@ -8,6 +8,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- A GitHub Pages site at <https://tochi-mba.github.io/Persona-api/>, in the REX ink/signal style: what Persona-api is,
+  its API, how to run it and what it will not do. `site/` is plain static HTML;
+  `.github/workflows/pages.yml` publishes it after `scripts/check_site.py` has checked every
+  page for a broken anchor, a missing asset, an image without alt text or draft text.
+- The repository is attributed to REX Technologies: the LICENSE copyright holder, the package
+  author and the README.
 - Optional settings-api wiring, off unless both `PERSONA_SETTINGS_API_BASE_URL` and
   `PERSONA_SETTINGS_API_TOKEN` are set. When on, each request reads that caller's
   `persona.recall_default_limit`, `persona.max_pinned_fields` and `persona.max_pinned_notes`
