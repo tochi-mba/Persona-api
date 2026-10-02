@@ -59,7 +59,7 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from persona_api.core.logging import get_logger
 
@@ -83,6 +83,7 @@ CONNECT_PRAGMAS: tuple[str, ...] = (
     "PRAGMA journal_mode = WAL",
     "PRAGMA foreign_keys = ON",
     "PRAGMA synchronous = NORMAL",
+    "PRAGMA secure_delete = ON",
     "PRAGMA busy_timeout = 5000",
 )
 """Applied to the connection, in this order, before anything else runs on it.
@@ -101,6 +102,11 @@ and an assistant with a persona may write on every turn. WAL with ``NORMAL`` **c
 corrupt the database** -- it can only lose the last commits on power loss, because the
 WAL is still fsynced at every checkpoint. Trading that against an fsync per commit is
 the right way round for this service. See docs/adr/0008-sqlite.md.
+
+``secure_delete = ON`` is what makes destroying a row mean the bytes are gone. Without it
+a ``DELETE`` only unlinks the cell, and the text a person asked to have destroyed stays in
+the page's free space, readable with ``grep``, until something happens to overwrite it.
+It costs a write of zeroes per deleted cell; this service deletes rarely.
 """
 
 
@@ -254,6 +260,23 @@ class Database:
         """Run one write statement in its own transaction. Returns rows affected."""
         return await self.transact(lambda connection: connection.execute(sql, parameters).rowcount)
 
+    async def checkpoint_truncate(self) -> None:
+        """Copy the write-ahead log into the database, then truncate it to nothing.
+
+        **The step that finishes destroying a row.** ``secure_delete`` zeroes what a
+        ``DELETE`` freed, but the page as it was before -- forgotten text and all -- is
+        still in the ``-wal`` file until a checkpoint moves past it, and only ``TRUNCATE``
+        empties the file rather than leaving its frames to be overwritten eventually.
+        user-api measured this before choosing it; ``VACUUM`` would also work, by
+        rewriting the whole database under a write lock.
+
+        Outside any transaction, because a checkpoint cannot run inside one, and once per
+        erasure or sweep rather than once per row. The cursor is closed on the worker: the
+        PRAGMA answers with a row, and an unread one leaves the checkpoint running, which
+        makes every later ``COMMIT`` on this connection fail.
+        """
+        await self.run(_checkpoint_truncate)
+
     def close(self) -> None:
         """Close the connection and stop the worker thread, without an event loop.
 
@@ -277,6 +300,33 @@ class Database:
         # The queue is empty by now -- the close above was the last thing on it -- so
         # this returns immediately rather than blocking the event loop.
         self._executor.shutdown(wait=True)
+
+
+def _checkpoint_truncate(connection: sqlite3.Connection) -> None:
+    """Checkpoint and truncate the write-ahead log, finishing the statement before returning."""
+    connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").close()
+
+
+type SearchIndex = Literal["fields_fts", "notes_fts"]
+"""The two full-text indexes. A literal, because the name is spliced into the statement."""
+
+
+def drop_deleted_terms(connection: sqlite3.Connection, index: SearchIndex) -> None:
+    """Rewrite one full-text index without the words of the documents deleted from it.
+
+    **The step between the delete and the checkpoint.** An FTS5 ``DELETE`` does not take a
+    document's words out of the index: it writes a delete marker, and the words stay in the
+    older segment -- lowercased and stemmed, but readable with ``grep`` -- until a merge
+    happens to reach them. ``optimize`` merges every segment into one and drops them. The
+    FTS5 ``secure-delete`` option would do it per delete, but needs SQLite 3.42, and the
+    Debian the image is built on ships 3.40.
+
+    ``optimize`` rewrites the whole index, so it runs once per transaction that destroys
+    something, never once per row. Inside that transaction, so the rows and their words go
+    together; the checkpoint after the commit then takes both out of the write-ahead log.
+    """
+    # The name is one of two literals, never anything a caller supplies.
+    connection.execute(f"INSERT INTO {index} ({index}) VALUES ('optimize')")  # noqa: S608
 
 
 def _in_transaction[T](

@@ -1,4 +1,7 @@
 CREATE INDEX events_by_persona ON events(account_id, profile, sequence);
+CREATE INDEX events_holding_values ON events(account_id, profile, subject)
+    WHERE old_value IS NOT NULL;
+CREATE INDEX fields_due ON fields(purge_after) WHERE purge_after IS NOT NULL;
 CREATE INDEX fields_live   ON fields(account_id, profile, updated_at DESC, key DESC)
     WHERE forgotten_at IS NULL;
 CREATE INDEX fields_pinned ON fields(account_id, profile, updated_at DESC, key DESC)
@@ -6,6 +9,7 @@ CREATE INDEX fields_pinned ON fields(account_id, profile, updated_at DESC, key D
 CREATE INDEX fields_source ON fields(account_id, profile, source, updated_at DESC, key DESC)
     WHERE forgotten_at IS NULL;
 CREATE INDEX notes_by_persona ON notes(account_id, profile);
+CREATE INDEX notes_due  ON notes(purge_after)  WHERE purge_after IS NOT NULL;
 CREATE INDEX notes_kind   ON notes(account_id, profile, kind, created_at DESC, note_id DESC)
     WHERE forgotten_at IS NULL;
 CREATE INDEX notes_live   ON notes(account_id, profile, created_at DESC, note_id DESC)
@@ -23,7 +27,7 @@ CREATE TABLE events (
     detail      TEXT    NOT NULL,
     source      TEXT    NOT NULL,
     asserted_by TEXT    NOT NULL
-) STRICT;
+, old_value TEXT) STRICT;
 CREATE TABLE fields (
     account_id   TEXT    NOT NULL,
     profile      TEXT    NOT NULL,
@@ -39,7 +43,7 @@ CREATE TABLE fields (
     revision     INTEGER NOT NULL DEFAULT 1,
     created_at   TEXT    NOT NULL,
     updated_at   TEXT    NOT NULL,
-    forgotten_at TEXT,
+    forgotten_at TEXT, purge_after TEXT,
     PRIMARY KEY (account_id, profile, key),
     FOREIGN KEY (account_id, profile)
         REFERENCES personas(account_id, profile) ON DELETE CASCADE
@@ -67,7 +71,7 @@ CREATE TABLE notes (
     revision     INTEGER NOT NULL DEFAULT 1,
     created_at   TEXT    NOT NULL,
     updated_at   TEXT    NOT NULL,
-    forgotten_at TEXT,
+    forgotten_at TEXT, purge_after TEXT,
     FOREIGN KEY (account_id, profile)
         REFERENCES personas(account_id, profile) ON DELETE CASCADE
 ) STRICT;
