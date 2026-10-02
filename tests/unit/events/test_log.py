@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 from typing import TYPE_CHECKING
 
 import pytest
@@ -266,10 +267,110 @@ class TestWhatAnEventMayNotContain:
 
     async def test_an_event_has_no_field_for_a_value_or_a_body(self) -> None:
         # The structural half of the rule. An event log is read more often, by more
-        # tools, and kept for longer than the rows it describes -- and it is the one
-        # table here with no tombstone, so anything written into it cannot be forgotten.
+        # tools, and kept for longer than the rows it describes. The one exception is
+        # old_value, which only a person's own log_values puts anything in, and which
+        # whatever destroys the row strips -- see TestLoggedValues.
         fields = set(Event.__dataclass_fields__)
 
         assert "value" not in fields
         assert "value_json" not in fields
         assert "body" not in fields
+
+
+class TestLoggedValues:
+    async def test_by_default_an_event_holds_no_value(self, log: SqlEventLog) -> None:
+        recorded = await write(log)
+
+        read, _ = await log.recent(ACCOUNT, PROFILE)
+        assert recorded.old_value is None
+        assert read[0].old_value is None
+
+    async def test_a_value_handed_in_comes_back_and_never_appears_in_a_repr(
+        self, log: SqlEventLog, database: Database
+    ) -> None:
+        recorded = await database.transact(
+            lambda connection: log.append(
+                connection,
+                action=EventAction.FIELD_REVISED,
+                account_id=ACCOUNT,
+                profile=PROFILE,
+                subject="voice",
+                source=Source.ASSISTANT,
+                asserted_by="persona",
+                old_value='"what it used to say"',
+            )
+        )
+
+        read, _ = await log.recent(ACCOUNT, PROFILE)
+        assert read == [recorded]
+        assert read[0].old_value == '"what it used to say"'
+        assert "what it used to say" not in repr(read[0])
+
+    async def test_deleting_a_personas_values_reaches_only_that_persona(
+        self, log: SqlEventLog, database: Database
+    ) -> None:
+        for profile in (PROFILE, "home"):
+            await database.transact(
+                partial(
+                    log.append,
+                    action=EventAction.NOTE_REVISED,
+                    account_id=ACCOUNT,
+                    profile=profile,
+                    subject="note_1",
+                    source=Source.ASSISTANT,
+                    asserted_by="persona",
+                    old_value='"old"',
+                )
+            )
+
+        await database.transact(
+            lambda connection: log.strip_persona_values(
+                connection, account_id=ACCOUNT, profile=PROFILE
+            )
+        )
+
+        work, _ = await log.recent(ACCOUNT, PROFILE)
+        home, _ = await log.recent(ACCOUNT, "home")
+        assert work[0].old_value is None
+        assert home[0].old_value == '"old"'
+
+    async def test_stripping_some_rows_reaches_only_their_noun_and_subjects(
+        self, log: SqlEventLog, database: Database
+    ) -> None:
+        """A field key and a note id share ``subject``, so a strip is scoped by noun too.
+
+        Without the noun, destroying the field ``voice`` would empty the value a note
+        whose id happened to be ``voice`` had kept, and that note is still there.
+        """
+        for action, subject in (
+            (EventAction.FIELD_REVISED, "voice"),
+            (EventAction.FIELD_REVISED, "mood"),
+            (EventAction.FIELD_REVISED, "kept"),
+            (EventAction.NOTE_REVISED, "voice"),
+        ):
+            await database.transact(
+                partial(
+                    log.append,
+                    action=action,
+                    account_id=ACCOUNT,
+                    profile=PROFILE,
+                    subject=subject,
+                    source=Source.ASSISTANT,
+                    asserted_by="persona",
+                    old_value='"old"',
+                )
+            )
+
+        await database.transact(
+            lambda connection: log.strip_values(
+                connection,
+                account_id=ACCOUNT,
+                profile=PROFILE,
+                noun="field",
+                subjects=("voice", "mood"),
+            )
+        )
+
+        logged, _ = await log.recent(ACCOUNT, PROFILE)
+        holding = {(event.action, event.subject) for event in logged if event.old_value}
+        assert holding == {(EventAction.FIELD_REVISED, "kept"), (EventAction.NOTE_REVISED, "voice")}

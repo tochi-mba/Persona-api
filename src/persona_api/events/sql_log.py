@@ -27,15 +27,19 @@ from persona_api.storage.times import from_column, to_column
 
 if TYPE_CHECKING:
     import sqlite3
+    from collections.abc import Sequence
 
     from persona_api.core.clock import Clock
     from persona_api.storage.database import Database
 
 COLUMNS = (
-    "sequence, event_id, at, account_id, profile, action, subject, detail, source, asserted_by"
+    "sequence, event_id, at, account_id, profile, action, subject, detail, source, asserted_by,"
+    " old_value"
 )
 
-WRITABLE = "event_id, at, account_id, profile, action, subject, detail, source, asserted_by"
+WRITABLE = (
+    "event_id, at, account_id, profile, action, subject, detail, source, asserted_by, old_value"
+)
 
 
 def new_event_id() -> str:
@@ -64,11 +68,12 @@ class SqlEventLog:
         detail: str = "",
         source: Source,
         asserted_by: str,
+        old_value: str | None = None,
     ) -> Event:
         at = self._clock.now()
         event_id = new_event_id()
         cursor = connection.execute(
-            f"INSERT INTO events ({WRITABLE}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",  # noqa: S608
+            f"INSERT INTO events ({WRITABLE}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",  # noqa: S608
             (
                 event_id,
                 to_column(at),
@@ -79,6 +84,7 @@ class SqlEventLog:
                 detail,
                 source.value,
                 asserted_by,
+                old_value,
             ),
         )
         sequence = int(cursor.lastrowid or 0)
@@ -102,6 +108,34 @@ class SqlEventLog:
             detail=detail,
             source=source,
             asserted_by=asserted_by,
+            old_value=old_value,
+        )
+
+    def strip_values(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        account_id: str,
+        profile: str,
+        noun: str,
+        subjects: Sequence[str],
+    ) -> None:
+        # One statement per subject rather than an IN list, so the statement is the same
+        # text every time and a batch of five hundred is not a five-hundred-parameter query.
+        for subject in subjects:
+            connection.execute(
+                "UPDATE events SET old_value = NULL WHERE account_id = ? AND profile = ?"
+                " AND subject = ? AND action LIKE ? AND old_value IS NOT NULL",
+                (account_id, profile, subject, f"{noun}.%"),
+            )
+
+    def strip_persona_values(
+        self, connection: sqlite3.Connection, *, account_id: str, profile: str
+    ) -> None:
+        connection.execute(
+            "UPDATE events SET old_value = NULL"
+            " WHERE account_id = ? AND profile = ? AND old_value IS NOT NULL",
+            (account_id, profile),
         )
 
     async def record(  # noqa: PLR0913
@@ -170,4 +204,5 @@ def _event_of(row: sqlite3.Row) -> Event:
         detail=row["detail"],
         source=Source(row["source"]),
         asserted_by=row["asserted_by"],
+        old_value=row["old_value"],
     )
