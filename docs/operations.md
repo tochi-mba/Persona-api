@@ -43,9 +43,9 @@ Off by default. Both `PERSONA_SETTINGS_API_BASE_URL` and `PERSONA_SETTINGS_API_T
 must be set together, or neither; half a pair is a startup error. The token is checked
 with the same 32-character rule settings-api enforces, and is never echoed on failure.
 
-When on, each authenticated request that needs a page size or a pin ceiling asks
-settings-api for that caller's `persona` namespace, presenting the same user token
-keyring minted. The grant there needs `audience_prefix` equal to `PERSONA_AUDIENCE`
+When on, each authenticated request that needs a page size, a pin ceiling, what forgetting
+does, whether to log old values, or what `@default` names asks settings-api for that
+caller's `persona` namespace, presenting the same user token keyring minted. The grant there needs `audience_prefix` equal to `PERSONA_AUDIENCE`
 (`persona` unless you changed it). A person may **lower** `recall_default_limit`,
 `max_pinned_fields` and `max_pinned_notes`; they cannot raise them above this
 deployment, and `PERSONA_RECALL_MAX_LIMIT` remains the hard cap on a named page size.
@@ -57,14 +57,37 @@ catalogue default rather than any one profile's choice. The two pin ceilings are
 per account and come back the same either way. This needs settings-client 0.2.0 or later:
 0.1.0 had no way to name a profile, and a person's own recall default was never read.
 
-If settings-api has never answered, those three fall back to the configuration. If it
+If settings-api has never answered, every setting falls back to the configuration --
+which for the four below means exactly what persona-api did before it read them. If it
 refuses this service (401/403), the request is **503** with a fixed body that names
 neither the grant nor the URL.
 
-`default_persona`, `log_values`, `erasure_mode` and `grace_days` are in the catalogue
-and do nothing here. Honouring them means this service grows a default-persona
-resolution and a sweeper; until it does, setting them stores a value and changes
-nothing.
+| Setting | What it does here | With settings-api off, or nothing chosen |
+| --- | --- | --- |
+| `default_persona` | Names the persona `@default` stands for in any `{profile}` path. Read with no profile, since which persona to load is asked before there is one to name — so it only takes effect while the catalogue entry is **account**-scoped. | `@default` is a 422, as any unstorable profile is. |
+| `erasure_mode` | What `forget_field` / `forget_note` do: `tombstone`, `grace` or `immediate`, written on the row at the moment it is forgotten. | `tombstone`: kept for ever, as before. Note the catalogue's own default; see below. |
+| `grace_days` | How long a `grace` row waits, 0–365. | 30, and only read under `grace`. |
+| `log_values` | Whether a change that replaces a value or body keeps it in the event's `old_value`. | Off: no values in the log, as before. |
+
+**The catalogue default for `persona.erasure_mode` must be `tombstone`** for a person who
+never chose to see no change. settings-api answers every unchosen key with its catalogue
+default, so while that default is `grace`, turning settings-api on starts scheduling the
+destruction of everything anybody forgets thirty days out. Check the deployed catalogue
+before turning this on.
+
+### The sweeper
+
+One background task, started with the app. It destroys forgotten rows whose `purge_after`
+has passed, at most 500 fields and 500 notes per sweep, oldest first, rewrites the search
+index without their words, then truncates the write-ahead log so the bytes are gone from
+disk too. The index rewrite costs time in proportion to the whole index, once per table per
+sweep that destroyed anything, and once per immediate erasure. It sweeps once at startup and then
+every `PERSONA_PURGE_INTERVAL_SECONDS` (3600). A grace period therefore ends up to one
+interval late, never early. A failed sweep is logged (`sweep_failed`) and retried on the
+next tick. It logs a count (`forgotten_rows_destroyed`), never what it destroyed.
+
+It reads no settings and needs no token: the person's choice was written on the row when
+they forgot it. Only somebody who chose `grace` ever has a row for it to find.
 
 Do not fetch settings at startup. An empty URL keeps today's behaviour exactly.
 
@@ -239,16 +262,23 @@ Every one of these is enforced **inside the transaction that does the write**. A
 that counts and then writes has a window in between, and two concurrent writes both pass
 it; there is an `asyncio.gather` test per cap that would find it if that ever regressed.
 
-**Forgotten rows are not reclaimed.** A soft forget sets a tombstone and stops the row
-appearing in reads; the text stays in the table and in the full-text index so
-`?include_forgotten=true` can bring it back. They still count against nothing — the caps
-above count live rows — but they do occupy disk. `DELETE /v1/personas/{profile}` is the
-only hard delete, and it cascades.
+**Forgotten rows are reclaimed only if their owner chose that.** A tombstone — the default
+— stops the row appearing in reads and search, and keeps its text in the table so
+`?include_forgotten=true` can bring it back. Tombstones count against nothing — the caps
+above count live rows — but they do occupy disk. A person who chose `persona.erasure_mode
+= grace` has forgotten rows destroyed by the sweeper when their grace period ends; one who
+chose `immediate` has them destroyed inside the request. `DELETE /v1/personas/{profile}`
+is a hard delete for everybody, and it cascades.
+
+Backups taken before a row was destroyed still contain it, and nothing here can reach into
+them. Restoring an old backup resurrects what was destroyed since.
 
 ## What to do when somebody asks for their data to be gone
 
 They delete it: `DELETE /v1/personas/{profile}` is a hard delete, it cascades to every
-field, note and index row, and it is theirs to call.
+field, note and index row and strips any old values the change log kept, and it is theirs
+to call. For single memories, they can choose `persona.erasure_mode = immediate` (or
+`grace`) in settings-api, and forgetting then destroys rather than hides.
 
 **There is no operator path**, by design — see
 [ADR-0003](adr/0003-no-administrative-surface.md). An endpoint that let you delete

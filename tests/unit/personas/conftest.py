@@ -35,8 +35,8 @@ def events(database: Database, clock: FakeClock) -> SqlEventLog:
 
 
 @pytest.fixture
-def store(database: Database) -> PersonaStore:
-    return PersonaStore(database=database)
+def store(database: Database, events: SqlEventLog) -> PersonaStore:
+    return PersonaStore(database=database, events=events)
 
 
 @pytest.fixture

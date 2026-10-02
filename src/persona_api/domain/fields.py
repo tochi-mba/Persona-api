@@ -378,8 +378,10 @@ class Field:
     ``value`` is the decoded value and ``value_type`` is derived from it, so the two
     cannot disagree -- see :func:`derive_value_type`.
 
-    ``forgotten_at`` is a tombstone, as it is for a note: forgetting a field hides it
-    and ``include_forgotten=true`` brings it back. ``revision`` counts the times the
+    ``forgotten_at`` marks it forgotten, as it does a note: forgetting a field hides it
+    and ``include_forgotten=true`` brings it back until ``purge_after``, when the person's
+    erasure setting scheduled one -- see :mod:`persona_api.domain.erasure`. ``revision``
+    counts the times the
     value has changed, which is what lets an event say a field was revised without the
     event ever carrying the value.
     """
@@ -398,3 +400,5 @@ class Field:
     created_at: datetime
     updated_at: datetime
     forgotten_at: datetime | None
+    purge_after: datetime | None = None
+    """When this forgotten field is destroyed. ``None`` while it is live, and for a tombstone."""

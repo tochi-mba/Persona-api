@@ -246,7 +246,7 @@ class PersonaService:
     async def delete(
         self, *, account_id: str, profile: str, source: Source, asserted_by: str
     ) -> None:
-        """Delete a persona and everything it holds. The only hard delete here.
+        """Delete a persona and everything it holds. A hard delete nobody has to opt into.
 
         Raises:
             PersonaNotFoundError: no such persona for this account.

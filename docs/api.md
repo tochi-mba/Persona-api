@@ -65,6 +65,23 @@ Two failures worth telling apart:
 | GET | `/v1/personas/{profile}/export` | `export_persona` |
 | GET | `/v1/personas/{profile}/events` | `read_persona_events` |
 
+## `@default`: the persona nobody named
+
+Anywhere a path takes `{profile}`, `@default` may stand in for it: it means the persona the
+person chose as their default in settings-api (`persona.default_persona`). So
+`GET /v1/personas/@default` is the identity block of whichever persona they load when a
+conversation does not say, and `PUT /v1/personas/@default/fields/voice` writes to it.
+Responses name the real profile.
+
+`@` is outside the profile-name rule, so no persona can ever be called `@default` and no
+existing path changes meaning. With no default chosen — or settings-api not configured, or
+unreachable with nothing cached — `@default` is refused exactly as any unstorable profile
+name always was: a **422** naming the profile rule. That is deliberate. Loading *a* persona
+the person did not choose would be worse than failing loudly, because a persona is the
+voice the assistant speaks in. There is no new operation for this; it is one more value
+the existing `profile` parameter accepts.
+[ADR-0009](adr/0009-erasure-and-the-default-persona.md)
+
 ## Personas
 
 A persona is one identity card per `(account, profile)`. **Writing a field or a note
@@ -93,10 +110,11 @@ returns rendered prose** — turning this into a system prompt is the caller's j
 `PATCH` changes only the keys you send. Sending `"pronouns": null` clears it; omitting
 `pronouns` leaves it alone. Those are different requests.
 
-`DELETE` is **the only hard delete in this service** and it cascades: every field, every
-note, every index entry. No undo, and no operator who can recover it — this service has no
-administrative surface ([ADR-0003](adr/0003-no-administrative-surface.md)). To remove one
-memory, forget the field or note instead; that is reversible.
+`DELETE` is **a hard delete whatever anybody's erasure setting says**, and it cascades:
+every field, every note, every index entry, and any old values the change log kept about
+them. No undo, and no operator who can recover it — this service has no administrative
+surface ([ADR-0003](adr/0003-no-administrative-surface.md)). To remove one memory, forget
+the field or note instead; that is reversible unless the person chose immediate erasure.
 
 A profile is validated for **shape only**. persona-api cannot check it against keyring —
 there is no endpoint that would answer — so `wrok` creates a second empty persona rather
@@ -130,8 +148,10 @@ PUT /v1/personas/work/fields/forms_of_address
 `GET .../schema` returns keys, descriptions, types and `updated_at` — **with no values**,
 so it is cheap enough to call before every write. That is the anti-sprawl mechanism.
 
-`DELETE` on a field is a **soft forget**: it stops appearing in reads and in search, and
-returns with `?include_forgotten=true`. Setting the key again revives it.
+`DELETE` on a field **forgets** it: it stops appearing in reads and in search at once.
+What happens next is the person's choice, not the caller's — see
+[Forgetting](#forgetting). By default it is kept and returns with
+`?include_forgotten=true`, and setting the key again revives it.
 
 ## Notes
 
@@ -150,6 +170,29 @@ are two notes, which is the difference between a note and a field.
 
 `PATCH` changes only the parts you name, so you can pin a note without resending its body.
 Editing a note does **not** move it in time — it stays where it was in the timeline.
+
+`DELETE` on a note forgets it, as a field's does. A forgotten note cannot be revised back.
+
+## Forgetting
+
+What `forget_field` and `forget_note` do is **the person's** setting in settings-api,
+`persona.erasure_mode`, spelled exactly as user-api's `user.erasure_mode`:
+
+| `erasure_mode` | What forgetting does |
+| --- | --- |
+| `tombstone` | Hidden, and kept for ever. `?include_forgotten=true` brings it back; setting a field's key again revives it. **What everybody gets until they choose otherwise, and what every deployment without settings-api does.** |
+| `grace` | Hidden now, destroyed after `persona.grace_days` (30 unless chosen, 0 to 365). Until then it behaves as a tombstone, and the forgotten row carries `purge_after`, the instant it goes. Setting a field again before then revives it and calls the destruction off; setting it after then starts a new field, even if the sweep has not yet run. |
+| `immediate` | Destroyed before the `204` is sent: the row, its search entry, and any old values the change log kept about it. No undo. |
+
+The choice is taken **when something is forgotten**, and written on the row. Changing the
+setting later never reaches back: switching to `immediate` does not destroy what is
+already waiting out a grace period, and leaving `tombstone` does not schedule what is
+already tombstoned. A sweeper destroys what is due, once an hour by default
+(`PERSONA_PURGE_INTERVAL_SECONDS`), at most 500 fields and 500 notes per sweep.
+
+The forget event's `detail` says which happened: empty for a tombstone (as it always was),
+`erased after <instant>` for a grace period, `erased` for immediate.
+[ADR-0009](adr/0009-erasure-and-the-default-persona.md)
 
 ## Provenance — on every field and every note
 
@@ -239,9 +282,21 @@ The two halves page **independently** (`field_cursor`, `note_cursor`), because a
 can be long in fields and short in notes.
 
 `GET .../events` returns the change log, newest first. It records what was set, revised or
-forgotten, by whom and when — and **never a field value or a note body**, only the key or
-the id. It is the one thing here that cannot be forgotten, so it holds as little as
-possible.
+forgotten, by whom and when — by default **never a field value or a note body**, only the
+key or the id, so it holds as little as possible.
+
+A person may turn `persona.log_values` on in settings-api. Then a change that replaces a
+field's value or a note's body keeps what it replaced, in `old_value`:
+
+```json
+{"action": "field.revised", "subject": "voice", "detail": "revision 3",
+ "old_value": {"value": "dry and concise"}, "...": "..."}
+```
+
+`old_value` is `null` for every other event, for every change made while the setting was
+off, and — the half that keeps the promise — once the field or note it describes is
+destroyed by a grace period ending, an immediate erasure or a persona delete, which strip
+it in the same transaction. Under `tombstone` nothing is destroyed, so nothing is stripped.
 
 ## Errors
 
@@ -265,7 +320,7 @@ Every failure is RFC 9457 problem+json:
 | 422 | A limit was broken (the message names which), a value looked like a credential (the message names keyring), a cursor was not ours, a search had no words in it, a `limit` was above the maximum, or the request itself was malformed — an invented body field, a bad profile or a bad query parameter. |
 | 429 | A cap: personas per account, fields or notes per persona, or pinned entries. |
 | 500 | A bug. The detail is withheld deliberately — quote the `request_id`. |
-| 503 | keyring is unreachable, so the token could not be checked — not your token. Or settings-api refused this service, which is a deployment misconfiguration; the body is fixed text either way. |
+| 503 | keyring is unreachable, so the token could not be checked — not your token. Or settings-api refused this service, which is a deployment misconfiguration; the body is fixed text either way. A route that reads the person's settings — the pin caps, the default page, what forgetting does, `@default` — answers this rather than guessing. |
 
 Request bodies are `extra="forbid"`: an invented field is a 422, not a silent ignore.
 That is what stops an `asserted_by` in a body from looking like it worked.

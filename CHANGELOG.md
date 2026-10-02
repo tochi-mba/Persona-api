@@ -8,6 +8,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- The four `persona` settings the catalogue proposed are honoured, per person, from
+  settings-api ([ADR-0009](docs/adr/0009-erasure-and-the-default-persona.md)). A person who
+  chose none of them -- and every deployment without settings-api -- sees no change.
+  - `persona.erasure_mode` and `persona.grace_days`: `forget_field` and `forget_note` keep
+    the row (`tombstone`), schedule its destruction (`grace`, after `grace_days`), or
+    destroy it before responding (`immediate`). The choice is written on the row as
+    `purge_after` when it is forgotten, so a later change of mind never reaches back.
+    Forgotten fields and notes carry `purge_after` in responses. Setting a forgotten field
+    again inside its grace period revives it and calls the destruction off.
+  - A sweeper destroys what is due: at startup and every `PERSONA_PURGE_INTERVAL_SECONDS`
+    (3600), at most 500 fields and 500 notes per sweep, needing no token.
+  - `persona.log_values`: a change that replaces a field's value or a note's body keeps
+    what it replaced in the event's new `old_value`. Whatever destroys the row -- the
+    sweeper, an immediate erasure, a persona delete -- strips it in the same transaction.
+  - `persona.default_persona`: `@default` in any `{profile}` path names the person's
+    default persona. With none chosen it is refused with the same 422 as before.
+- Migration `0002_erasure.sql`: `fields.purge_after`, `notes.purge_after`,
+  `events.old_value`, and partial indexes for the sweep and the strip. Every existing row
+  reads back as it did: a forgotten row stays a tombstone.
 - A GitHub Pages site at <https://tochi-mba.github.io/Persona-api/>, in the REX ink/signal style: what Persona-api is,
   its API, how to run it and what it will not do. `site/` is plain static HTML;
   `.github/workflows/pages.yml` publishes it after `scripts/check_site.py` has checked every
@@ -18,12 +37,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `PERSONA_SETTINGS_API_TOKEN` are set. When on, each request reads that caller's
   `persona.recall_default_limit`, `persona.max_pinned_fields` and `persona.max_pinned_notes`
   and holds them to the deployment's ceilings -- a person may narrow a cap and never raise
-  it. Unset, behaviour is unchanged. `default_persona`, `log_values`, `erasure_mode` and
-  `grace_days` stay in the catalogue and unwired until this service grows a default-persona
-  resolution and a sweeper.
+  it. Unset, behaviour is unchanged.
 
 ### Changed
 
+- The database runs with `PRAGMA secure_delete = ON`. Anything that destroys a row (an
+  immediate erasure, a sweep, a write to a field whose grace period has ended, a persona
+  delete) also rewrites the full-text index it was in with FTS5 `optimize`, in the same
+  transaction, and then truncates the write-ahead log. Without the rewrite a destroyed
+  row's words stayed in the index's segments, readable with `grep`.
+- `forget_field` and `forget_note` read the caller's settings when settings-api is on, so
+  settings-api refusing this service (401/403) makes them 503, as it already did every
+  route that reads a pin cap.
 - **settings-client 0.4.1**, whose single-flight locks no longer outlive a failed resolve:
   during a long settings-api outage the client kept one lock per token it had seen.
 - **Breaking:** the floor is now **Python 3.12** (CI runs 3.12 and 3.13).

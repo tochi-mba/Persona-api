@@ -16,13 +16,19 @@ to change the pin would be one race away from overwriting an edit it never saw.
 **Ordering and range filters are on ``created_at``**, not ``updated_at``. When a note
 happened is what you ask about; when it was last edited is not. Fields go the other way,
 for the same reason in reverse. See :mod:`persona_api.memory.filters`.
+
+Forgetting follows the person's erasure setting exactly as a field's does, and the
+fields module says how. The one difference: a forgotten note cannot be revised back to
+life, so nothing here ever has to call a scheduled destruction off.
 """
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
 from persona_api.domain.cursors import decode_cursor, encode_cursor
+from persona_api.domain.erasure import TOMBSTONE
 from persona_api.domain.errors import LimitExceededError, NoteNotFoundError
 from persona_api.domain.notes import Note, NoteKind, new_note_id, normalize_body
 from persona_api.domain.provenance import Source
@@ -30,19 +36,23 @@ from persona_api.domain.secrets import refuse_if_credential
 from persona_api.events.log import EventAction
 from persona_api.memory.pagination import Page
 from persona_api.memory.search import to_match_query
+from persona_api.storage.database import drop_deleted_terms
 from persona_api.storage.times import from_column, from_column_optional, to_column
 
 if TYPE_CHECKING:
     import sqlite3
+    from collections.abc import Sequence
+    from datetime import datetime
 
     from persona_api.core.clock import Clock
+    from persona_api.domain.erasure import ErasurePolicy
     from persona_api.events.log import EventLog
     from persona_api.memory.filters import NoteFilters
     from persona_api.storage.database import Database
 
 COLUMNS = (
     "note_id, account_id, profile, seq, body, kind, source, asserted_by, "
-    "pinned, revision, created_at, updated_at, forgotten_at"
+    "pinned, revision, created_at, updated_at, forgotten_at, purge_after"
 )
 
 
@@ -110,7 +120,7 @@ class NoteStore:
             seq = _next_seq(connection)
             connection.execute(
                 f"INSERT INTO notes ({COLUMNS}) "  # noqa: S608
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     note_id,
                     account_id,
@@ -124,6 +134,7 @@ class NoteStore:
                     1,
                     to_column(now),
                     to_column(now),
+                    None,
                     None,
                 ),
             )
@@ -221,11 +232,14 @@ class NoteStore:
         kind: NoteKind | None = None,
         pinned: bool | None = None,
         max_pinned: int | None = None,
+        log_values: bool = False,
     ) -> Note:
         """Change the parts of a note that are named, leaving the rest alone.
 
         ``max_pinned`` is this write's pin ceiling. When omitted the constructor value
-        stands; when passed it wins for this write.
+        stands; when passed it wins for this write. ``log_values`` is the writer's
+        ``persona.log_values``: when on, a revision that replaces the body records the
+        body it replaced in the event log.
 
         Raises:
             NoteNotFoundError: no live note by that id in this persona.
@@ -295,21 +309,40 @@ class NoteStore:
                 detail=f"revision {existing['revision'] + 1}",
                 source=source,
                 asserted_by=asserted_by,
+                # Only the body, and only when it changed: a new kind or pin has replaced
+                # nothing the person asked to have kept.
+                old_value=(
+                    json.dumps(existing["body"])
+                    if log_values and new_body != existing["body"]
+                    else None
+                ),
             )
             return _note_of(_row(connection, note_id))
 
         return await self._db.transact(write)
 
-    async def forget(
-        self, account_id: str, profile: str, note_id: str, *, source: Source, asserted_by: str
+    # PLR0913: the row, who is forgetting it, and what their erasure setting says.
+    async def forget(  # noqa: PLR0913
+        self,
+        account_id: str,
+        profile: str,
+        note_id: str,
+        *,
+        source: Source,
+        asserted_by: str,
+        erasure: ErasurePolicy = TOMBSTONE,
     ) -> None:
-        """Tombstone one note. Reversible with ``include_forgotten``.
+        """Forget one note, as ``erasure`` says: keep it, schedule it, or destroy it.
+
+        The default is a tombstone, reversible with ``include_forgotten``, which is what
+        forgetting did before it was anybody's choice.
 
         Raises:
             NoteNotFoundError: no live note by that id in this persona. Identical to the
                 answer for another account's note.
         """
         now = self._clock.now()
+        purge_after = erasure.purge_after(now)
 
         def write(connection: sqlite3.Connection) -> None:
             existing = connection.execute(
@@ -322,8 +355,14 @@ class NoteStore:
                 raise NoteNotFoundError(msg)
 
             connection.execute(
-                "UPDATE notes SET forgotten_at = ?, updated_at = ? WHERE note_id = ?",
-                (to_column(now), to_column(now), note_id),
+                "UPDATE notes SET forgotten_at = ?, updated_at = ?, purge_after = ?"
+                " WHERE note_id = ?",
+                (
+                    to_column(now),
+                    to_column(now),
+                    None if purge_after is None else to_column(purge_after),
+                    note_id,
+                ),
             )
             # Out of the index as well as out of the listing: a forgotten note that
             # still came back in recall would make the tombstone cosmetic.
@@ -334,11 +373,38 @@ class NoteStore:
                 account_id=account_id,
                 profile=profile,
                 subject=note_id,
+                detail=erasure.describe(now),
                 source=source,
                 asserted_by=asserted_by,
             )
+            if erasure.destroys_now:
+                self._destroy(connection, [(account_id, profile, note_id)])
 
         await self._db.transact(write)
+        if erasure.destroys_now:
+            # After the commit: a checkpoint cannot run inside a transaction, and it is
+            # what takes the bytes out of the write-ahead log as well.
+            await self._db.checkpoint_truncate()
+
+    async def purge_due(self, *, now: datetime, limit: int) -> int:
+        """Destroy up to ``limit`` forgotten notes whose ``purge_after`` has passed.
+
+        The mirror of :meth:`persona_api.memory.fields.FieldStore.purge_due`, which says
+        why it is bounded and why it is the one query here not scoped to an account.
+        """
+
+        def write(connection: sqlite3.Connection) -> int:
+            due = connection.execute(
+                "SELECT account_id, profile, note_id FROM notes "
+                "WHERE purge_after IS NOT NULL AND purge_after <= ? "
+                "ORDER BY purge_after LIMIT ?",
+                (to_column(now), limit),
+            ).fetchall()
+            return self._destroy(
+                connection, [(row["account_id"], row["profile"], row["note_id"]) for row in due]
+            )
+
+        return await self._db.transact(write)
 
     async def count(self, account_id: str, profile: str, *, include_forgotten: bool = False) -> int:
         """How many notes this persona holds."""
@@ -379,6 +445,23 @@ class NoteStore:
             if held >= max_pinned:
                 msg = f"at most {max_pinned} pinned notes per persona"
                 raise LimitExceededError(msg)
+
+    def _destroy(
+        self, connection: sqlite3.Connection, targets: Sequence[tuple[str, str, str]]
+    ) -> int:
+        """Destroy notes, by ``(account_id, profile, note_id)``, in the caller's transaction.
+
+        The row, the bodies the event log kept, and the note's words in the search index,
+        as :meth:`persona_api.memory.fields.FieldStore._destroy` says. Returns how many went.
+        """
+        for account_id, profile, note_id in targets:
+            connection.execute("DELETE FROM notes WHERE note_id = ?", (note_id,))
+            self._events.strip_values(
+                connection, account_id=account_id, profile=profile, noun="note", subjects=(note_id,)
+            )
+        if targets:
+            drop_deleted_terms(connection, "notes_fts")
+        return len(targets)
 
     def _index(self, connection: sqlite3.Connection, seq: int, text: str) -> None:
         """Write one row's searchable text. Called from every write path."""
@@ -464,4 +547,5 @@ def _note_of(row: sqlite3.Row) -> Note:
         created_at=from_column(row["created_at"]),
         updated_at=from_column(row["updated_at"]),
         forgotten_at=from_column_optional(row["forgotten_at"]),
+        purge_after=from_column_optional(row["purge_after"]),
     )

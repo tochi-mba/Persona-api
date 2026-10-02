@@ -2,10 +2,12 @@
 
 The deployment's configuration says how persona-api behaves for everybody. settings-api
 holds what each person has chosen within that, and this module is the one place the two
-meet: it turns a caller's token into the page size a list uses when they name none, and
-the pin ceilings a write is held to. Nothing is read at startup, and with no settings-api
-configured every person gets the configuration as it stands -- exactly what persona-api
-did before it read anybody's settings at all.
+meet: it turns a caller's token into the page size a list uses when they name none, the
+pin ceilings a write is held to, the persona ``@default`` names, what forgetting does, and
+whether the event log keeps what a change replaced. Nothing is read at startup, and with
+no settings-api configured every person gets the configuration as it stands -- exactly
+what persona-api did before it read anybody's settings at all: no default persona,
+forgetting as a tombstone, and no values in the log.
 
 Four rules shape it.
 
@@ -17,14 +19,16 @@ page size is held to.
 
 **An outage degrades per setting.** Every ``persona`` entry this service reads falls back
 to a default, and when settings-api has never answered, the configuration is that
-default. ``default_persona``, ``log_values``, ``erasure_mode`` and ``grace_days`` are in
-the catalogue and unread here: there is no default-persona resolution and no sweeper, so
-honouring them would be faking a mechanism this service does not have.
+default. For ``default_persona`` that is no default at all, so ``@default`` fails loudly
+rather than loading *a* persona -- which is the catalogue's own reasoning for its null.
+A value of the wrong shape is settings-api's bug, and is logged by key and treated as
+unchosen rather than guessed at.
 
 **The profile goes with the read.** ``recall_default_limit`` is one value per keyring
 profile in settings-api, so a read that named none would get the catalogue default back
 and never the person's own. The caller passes the profile the path names; a route that
-spans every profile names none.
+spans every profile names none, and so does resolving ``@default`` -- which persona to
+load is asked before there is one to name.
 
 **A refusal is not an outage.** settings-api answering 401 or 403 means this service is
 misconfigured -- a missing grant, a wrong token -- and serving defaults would hide that
@@ -33,6 +37,7 @@ behind behaviour that happens to work. The request fails instead.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
@@ -44,7 +49,15 @@ from settings_client import (
 )
 
 from persona_api.core.logging import get_logger
-from persona_api.domain.errors import PreferencesUnavailableError
+from persona_api.domain.erasure import (
+    DEFAULT_GRACE_DAYS,
+    MAX_GRACE_DAYS,
+    TOMBSTONE,
+    ErasureMode,
+    ErasurePolicy,
+)
+from persona_api.domain.errors import InvalidProfileError, PreferencesUnavailableError
+from persona_api.domain.personas import normalize_profile
 
 if TYPE_CHECKING:
     from settings_client import ResolvedSettings, SettingsClient
@@ -71,6 +84,15 @@ class Preferences:
 
     max_pinned_notes: int
     """How many notes this person may pin into the prompt."""
+
+    default_persona: str | None = None
+    """The profile ``@default`` stands for, stored form, or ``None`` when there is none."""
+
+    erasure: ErasurePolicy = TOMBSTONE
+    """What forgetting a field or note does for this person. A tombstone unless chosen."""
+
+    log_values: bool = False
+    """Whether a change this person makes keeps what it replaced in the event log."""
 
 
 class PreferenceSource(Protocol):
@@ -101,6 +123,9 @@ def deployment_preferences(settings: Settings) -> Preferences:
         recall_default_limit=settings.recall_default_limit,
         max_pinned_fields=settings.max_pinned_fields,
         max_pinned_notes=settings.max_pinned_notes,
+        default_persona=None,
+        erasure=TOMBSTONE,
+        log_values=False,
     )
 
 
@@ -172,6 +197,9 @@ class SettingsApiPreferences:
             ),
             max_pinned_fields=_narrow(settings.max_pinned_fields, pinned_fields),
             max_pinned_notes=_narrow(settings.max_pinned_notes, pinned_notes),
+            default_persona=_profile_name(resolved, "default_persona"),
+            erasure=_erasure(resolved),
+            log_values=_flag(resolved, "log_values"),
         )
 
 
@@ -208,19 +236,74 @@ def _narrow(deployment: int, chosen: int | None, *, ceiling: int | None = None) 
     return value if ceiling is None else min(value, ceiling)
 
 
-def _whole_number(resolved: ResolvedSettings, key: str, *, minimum: int) -> int | None:
-    """``key`` as a whole number no smaller than ``minimum``, or ``None`` if there is none.
+def _whole_number(
+    resolved: ResolvedSettings, key: str, *, minimum: int, maximum: int | None = None
+) -> int | None:
+    """``key`` as a whole number in ``[minimum, maximum]``, or ``None`` if there is none.
 
     A deployment running an older settings-api may not have the key, and a value of the
     wrong shape is settings-api's bug rather than a reason to fail somebody's write.
     Either way the configuration stands in. The key is logged; the value never is.
     """
     value = resolved.get(key, None)
-    if isinstance(value, int) and not isinstance(value, bool) and value >= minimum:
+    if (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and value >= minimum
+        and (maximum is None or value <= maximum)
+    ):
         return value
+    _unusable(key, value)
+    return None
+
+
+def _profile_name(resolved: ResolvedSettings, key: str) -> str | None:
+    """``key`` as a profile name in the form this service stores, or ``None``.
+
+    Normalized exactly as a path segment is, so a stored ``"Work"`` and a path's ``work``
+    name the same persona. A name this service could never store is unusable rather than
+    a reason to load something else.
+    """
+    value = resolved.get(key, None)
+    if isinstance(value, str):
+        with contextlib.suppress(InvalidProfileError):
+            return normalize_profile(value)
+    _unusable(key, value)
+    return None
+
+
+def _flag(resolved: ResolvedSettings, key: str) -> bool:
+    """``key`` as a boolean, off when absent or unusable -- which is what off always was."""
+    value = resolved.get(key, None)
+    if isinstance(value, bool):
+        return value
+    _unusable(key, value)
+    return False
+
+
+def _erasure(resolved: ResolvedSettings) -> ErasurePolicy:
+    """What forgetting does for this person, or a tombstone when they have not said.
+
+    ``grace_days`` is read only for ``grace``, the one mode it means anything in. An
+    unusable number there is the catalogue's default of thirty days rather than the
+    tombstone, because the person did choose to have things destroyed; it is the
+    schedule that settings-api got wrong, not the decision.
+    """
+    value = resolved.get("erasure_mode", None)
+    if value not in tuple(ErasureMode):
+        _unusable("erasure_mode", value)
+        return TOMBSTONE
+    mode = ErasureMode(str(value))
+    if mode is not ErasureMode.GRACE:
+        return ErasurePolicy(mode=mode)
+    days = _whole_number(resolved, "grace_days", minimum=0, maximum=MAX_GRACE_DAYS)
+    return ErasurePolicy(mode=mode, grace_days=DEFAULT_GRACE_DAYS if days is None else days)
+
+
+def _unusable(key: str, value: object) -> None:
+    """Log that ``key`` came back in a shape this service cannot use. Never the value."""
     if value is not None:
         logger.warning("setting_unusable", namespace=NAMESPACE, key=key)
-    return None
 
 
 __all__ = [

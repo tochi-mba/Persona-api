@@ -13,13 +13,17 @@ It is also where ``asserted_by`` comes from. The audience of the verified token,
 from the verified claims, never from a request body -- which is exactly what makes it the
 trustworthy half of a field's provenance. See
 ``docs/adr/0004-provenance-is-partly-a-claim.md``.
+
+:data:`ProfileDep` is how ``@default`` becomes a persona. Every route with a ``{profile}``
+segment takes the profile through it, so the reserved segment means the same thing on
+every one of them, and a route cannot forget to honour it.
 """
 
 from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import Depends, Query, Request
+from fastapi import Depends, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -28,7 +32,7 @@ from persona_api.core.container import Container
 from persona_api.core.context import set_account_id
 from persona_api.core.preferences import Preferences
 from persona_api.domain.errors import AuthenticationError, InvalidProfileError
-from persona_api.domain.personas import normalize_profile
+from persona_api.domain.personas import DEFAULT_PERSONA_SEGMENT, normalize_profile
 
 bearer_scheme = HTTPBearer(
     auto_error=False,
@@ -82,6 +86,44 @@ async def get_current_caller(
 CurrentCallerDep = Annotated[VerifiedCaller, Depends(get_current_caller)]
 
 
+async def resolve_profile(container: Container, caller: VerifiedCaller, profile: str) -> str:
+    """The profile a path segment names: itself, or for ``@default`` the person's default.
+
+    With no ``persona.default_persona`` chosen -- or settings-api off, or unable to say --
+    the segment is handed on unchanged, and it fails normalization exactly as it always
+    has: a 422 naming the profile rule. The catalogue calls that the conservative answer,
+    because loading *a* persona the person did not choose is worse than failing loudly.
+
+    Matched after the same trim and case-fold a profile gets, so ``@Default`` is not a
+    different, unstorable profile from ``@default``.
+    """
+    if profile.strip().lower() != DEFAULT_PERSONA_SEGMENT:
+        return profile
+    preferences = await container.preferences.for_token(caller.token)
+    return preferences.default_persona or profile
+
+
+async def get_profile(
+    container: ContainerDep,
+    caller: CurrentCallerDep,
+    profile: Annotated[
+        str,
+        Path(
+            description=(
+                "The persona's profile, such as 'work'. Or '@default', for the persona "
+                "this person chose as their default in settings-api "
+                "(persona.default_persona); with none chosen, '@default' is refused."
+            )
+        ),
+    ],
+) -> str:
+    """The ``{profile}`` path segment, with ``@default`` resolved."""
+    return await resolve_profile(container, caller, profile)
+
+
+ProfileDep = Annotated[str, Depends(get_profile)]
+
+
 async def get_preferences(
     container: ContainerDep, caller: CurrentCallerDep, request: Request
 ) -> Preferences:
@@ -92,12 +134,14 @@ async def get_preferences(
     the persona they are paging through. The profile is taken from the path rather than
     declared as a parameter, so no route gains a ``profile`` query parameter in its
     contract, and a route with no profile in its path -- ``recall_everywhere`` -- asks
-    for none. A name that cannot be stored is not sent: the route refuses it on its own.
+    for none. ``@default`` is resolved first, so the person's caps are the ones for the
+    persona it stands for. A name that cannot be stored is not sent: the route refuses
+    it on its own.
     """
     profile: str | None = request.path_params.get("profile")
     if profile is not None:
         try:
-            profile = normalize_profile(profile)
+            profile = normalize_profile(await resolve_profile(container, caller, profile))
         except InvalidProfileError:
             profile = None
     return await container.preferences.for_token(caller.token, profile)

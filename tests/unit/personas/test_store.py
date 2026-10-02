@@ -209,3 +209,34 @@ class TestDeleting:
         await store.delete(ACCOUNT, PROFILE)
 
         assert await database.count("SELECT count(*) AS total FROM events") == 1
+
+    async def test_it_takes_the_values_the_log_kept_and_leaves_other_personas(
+        self, store: PersonaStore, database: Database
+    ) -> None:
+        """The bug, named: a deleted persona's old values survived in its event log.
+
+        With persona.log_values on, the log holds copies of what the persona said. The
+        persona's own rows go through the cascade; the copies have to go with them, in
+        the same transaction, or "delete everything" leaves the words behind.
+        """
+        sentinel = "ZORBLAX what the deleted persona used to say 7741"
+        for profile in (PROFILE, "home"):
+            await store.add(make(profile=profile), cap=20)
+            await database.execute(
+                "INSERT INTO events (event_id, at, account_id, profile, action, subject,"
+                " detail, source, asserted_by, old_value)"
+                " VALUES (?, '2026-01-01', ?, ?, 'field.revised', 'voice', '', 'assistant',"
+                " 'persona', ?)",
+                (f"evt_{profile}", ACCOUNT, profile, f'"{sentinel} {profile}"'),
+            )
+
+        await store.delete(ACCOUNT, PROFILE)
+
+        kept = await database.fetch_all("SELECT profile, old_value FROM events ORDER BY profile")
+        assert [(row["profile"], row["old_value"]) for row in kept] == [
+            ("home", f'"{sentinel} home"'),
+            (PROFILE, None),
+        ]
+        wal = database.path.with_name(database.path.name + "-wal")
+        assert f"{sentinel} {PROFILE}".encode() not in database.path.read_bytes()
+        assert not wal.exists() or f"{sentinel} {PROFILE}".encode() not in wal.read_bytes()

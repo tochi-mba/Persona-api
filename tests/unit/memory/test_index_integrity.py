@@ -19,8 +19,10 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from persona_api.domain.erasure import ErasureMode, ErasurePolicy
 from persona_api.domain.provenance import Source
 from tests.conftest import ACCOUNT, PROFILE
+from tests.fakes.clock import EPOCH
 from tests.unit.memory.conftest import ASSERTED_BY, set_field, write_note
 
 if TYPE_CHECKING:
@@ -91,6 +93,22 @@ class TestFieldsIndexIntegrity:
         assert await indexed_field_seqs(database) == await live_field_seqs(database)
         assert await fields.search(ACCOUNT, query="remembered", limit=10)
 
+    async def test_after_a_grace_period_ends(self, fields: FieldStore, database: Database) -> None:
+        await set_field(fields, key="voice")
+        await set_field(fields, key="tone")
+        await fields.forget(
+            ACCOUNT,
+            PROFILE,
+            "tone",
+            source=Source.ASSISTANT,
+            asserted_by=ASSERTED_BY,
+            erasure=ErasurePolicy(mode=ErasureMode.GRACE, grace_days=0),
+        )
+
+        await fields.purge_due(now=EPOCH, limit=10)
+
+        assert await indexed_field_seqs(database) == await live_field_seqs(database)
+
     async def test_after_deleting_the_persona(self, fields: FieldStore, database: Database) -> None:
         # The one that gets missed. The rows go through ON DELETE CASCADE, which the
         # FTS table is not part of -- so without an explicit sweep the index keeps
@@ -135,6 +153,23 @@ class TestNotesIndexIntegrity:
 
         assert await indexed_note_seqs(database) == await live_note_seqs(database)
         assert await notes.search(ACCOUNT, query="memory", limit=10) == []
+
+    async def test_after_an_immediate_erasure(self, notes: NoteStore, database: Database) -> None:
+        kept = await write_note(notes, body="kept")
+        doomed = await write_note(notes, body="doomed")
+        await notes.forget(
+            ACCOUNT,
+            PROFILE,
+            doomed.note_id,
+            source=Source.ASSISTANT,
+            asserted_by=ASSERTED_BY,
+            erasure=ErasurePolicy(mode=ErasureMode.IMMEDIATE),
+        )
+
+        assert await indexed_note_seqs(database) == await live_note_seqs(database)
+        assert [note.note_id for note in await notes.search(ACCOUNT, query="kept", limit=10)] == [
+            kept.note_id
+        ]
 
     async def test_after_deleting_the_persona(self, notes: NoteStore, database: Database) -> None:
         await write_note(notes, body="first")
