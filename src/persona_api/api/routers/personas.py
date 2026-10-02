@@ -13,10 +13,16 @@ honoured lie.
 
 **Descriptions are written for a model to read**, because they become MCP tool
 descriptions. They say when *not* to call something as often as when to.
+
+Every ``{profile}`` is taken through :data:`ProfileDep`, so ``@default`` names the person's
+default persona on every route at once. What forgetting does, and whether a change keeps
+the value it replaced, come from the caller's preferences -- see
+:mod:`persona_api.core.preferences`.
 """
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Annotated, Any
 
@@ -27,6 +33,7 @@ from persona_api.api.dependencies import (
     CurrentCallerDep,
     LimitQuery,
     PreferencesDep,
+    ProfileDep,
 )
 from persona_api.api.schemas.common import Problem
 from persona_api.api.schemas.personas import (
@@ -38,6 +45,7 @@ from persona_api.api.schemas.personas import (
     FieldResponse,
     FieldSchemaEntry,
     IdentityResponse,
+    LoggedValue,
     NoteListResponse,
     NoteResponse,
     PersonaCard,
@@ -73,6 +81,16 @@ _NOT_FOUND: dict[int | str, dict[str, Any]] = {
         ),
     }
 }
+
+_FORGETTING = (
+    "What forgetting does is the PERSON'S choice (persona.erasure_mode in settings-api), "
+    "not yours. By default, and unless they chose otherwise, it is a SOFT forget: the row "
+    "stops appearing in reads and in search, comes back with include_forgotten=true, and "
+    "is kept -- so an assistant deciding on its own that a memory is stale cannot destroy "
+    "it. If they chose 'grace' it is destroyed after their grace period (purge_after on "
+    "the forgotten row says when); if they chose 'immediate' it is destroyed before this "
+    "returns, with NO UNDO."
+)
 _REFUSED: dict[int | str, dict[str, Any]] = {
     status.HTTP_422_UNPROCESSABLE_CONTENT: {
         "model": Problem,
@@ -125,6 +143,7 @@ def render_field(field: DomainField) -> FieldResponse:
         created_at=field.created_at,
         updated_at=field.updated_at,
         forgotten_at=field.forgotten_at,
+        purge_after=field.purge_after,
     )
 
 
@@ -142,6 +161,7 @@ def render_note(note: DomainNote) -> NoteResponse:
         created_at=note.created_at,
         updated_at=note.updated_at,
         forgotten_at=note.forgotten_at,
+        purge_after=note.purge_after,
     )
 
 
@@ -156,6 +176,9 @@ def render_event(event: Event) -> EventResponse:
         detail=event.detail,
         source=event.source,
         asserted_by=event.asserted_by,
+        old_value=(
+            None if event.old_value is None else LoggedValue(value=json.loads(event.old_value))
+        ),
     )
 
 
@@ -242,7 +265,7 @@ async def create_persona(
     responses={**_UNAUTHORIZED, **_NOT_FOUND},
 )
 async def get_persona(
-    container: ContainerDep, caller: CurrentCallerDep, profile: str
+    container: ContainerDep, caller: CurrentCallerDep, profile: ProfileDep
 ) -> IdentityResponse:
     """The card, what is pinned, and the counts."""
     identity = await container.persona_service.identity(caller.account_id, profile)
@@ -270,7 +293,7 @@ async def get_persona(
 async def update_persona(
     container: ContainerDep,
     caller: CurrentCallerDep,
-    profile: str,
+    profile: ProfileDep,
     request: UpdatePersonaRequest,
 ) -> PersonaCard:
     """Merge the named card fields over the stored ones."""
@@ -296,18 +319,18 @@ async def update_persona(
     operation_id="delete_persona",
     summary="Delete a persona and everything in it",
     description=(
-        "THE ONLY HARD DELETE IN THIS SERVICE, and it cascades: every field, every "
-        "note and every search index entry goes with it. There is no undo and no "
-        "operator who can recover it -- this service has no administrative surface by "
-        "design. If you are exposing this as a tool, require a confirmation turn. To "
-        "remove one memory rather than all of them, forget the field or the note "
-        "instead: that is reversible."
+        "A HARD DELETE, and it cascades: every field, every note and every search index "
+        "entry goes with it, whatever the person's erasure setting says. There is no undo "
+        "and no operator who can recover it -- this service has no administrative surface "
+        "by design. If you are exposing this as a tool, require a confirmation turn. To "
+        "remove one memory rather than all of them, forget the field or the note instead: "
+        "that is reversible unless the person chose immediate erasure."
     ),
     status_code=status.HTTP_204_NO_CONTENT,
     responses={**_UNAUTHORIZED, **_NOT_FOUND},
 )
 async def delete_persona(
-    container: ContainerDep, caller: CurrentCallerDep, profile: str
+    container: ContainerDep, caller: CurrentCallerDep, profile: ProfileDep
 ) -> Response:
     """Delete one persona, and everything it holds."""
     await container.persona_service.delete(
@@ -333,7 +356,7 @@ async def delete_persona(
     responses={**_UNAUTHORIZED, **_NOT_FOUND},
 )
 async def describe_persona_schema(
-    container: ContainerDep, caller: CurrentCallerDep, profile: str
+    container: ContainerDep, caller: CurrentCallerDep, profile: ProfileDep
 ) -> PersonaSchemaResponse:
     """What keys exist, and what each is for."""
     persona = await container.persona_service.get(caller.account_id, profile)
@@ -372,7 +395,7 @@ async def describe_persona_schema(
 async def list_fields(  # noqa: PLR0913, PLR0917 -- one parameter per documented filter
     container: ContainerDep,
     caller: CurrentCallerDep,
-    profile: str,
+    profile: ProfileDep,
     limit: LimitQuery,
     cursor: CursorQuery = None,
     q: Annotated[str | None, Query(description="Full-text search within this persona.")] = None,
@@ -443,7 +466,7 @@ async def set_field(  # noqa: PLR0913, PLR0917
     container: ContainerDep,
     caller: CurrentCallerDep,
     preferences: PreferencesDep,
-    profile: str,
+    profile: ProfileDep,
     key: str,
     request: SetFieldRequest,
 ) -> FieldResponse:
@@ -469,6 +492,7 @@ async def set_field(  # noqa: PLR0913, PLR0917
         asserted_by=caller.audience,
         pinned=request.pinned,
         max_pinned=preferences.max_pinned_fields,
+        log_values=preferences.log_values,
     )
     return render_field(field)
 
@@ -488,7 +512,7 @@ async def set_field(  # noqa: PLR0913, PLR0917
 async def get_field(
     container: ContainerDep,
     caller: CurrentCallerDep,
-    profile: str,
+    profile: ProfileDep,
     key: str,
     include_forgotten: IncludeForgottenQuery = False,
 ) -> FieldResponse:
@@ -506,19 +530,18 @@ async def get_field(
     "/personas/{profile}/fields/{key}",
     operation_id="forget_field",
     summary="Forget a structured field",
-    description=(
-        "A SOFT forget: the field stops appearing in reads and in search, and comes "
-        "back with include_forgotten=true. Reversible on purpose, so an assistant "
-        "deciding on its own that a memory is stale cannot destroy it. Setting the key "
-        "again revives it."
-    ),
+    description=(f"{_FORGETTING} Until it is destroyed, setting the key again revives the field."),
     status_code=status.HTTP_204_NO_CONTENT,
     responses={**_UNAUTHORIZED, **_NOT_FOUND, **_REFUSED},
 )
 async def forget_field(
-    container: ContainerDep, caller: CurrentCallerDep, profile: str, key: str
+    container: ContainerDep,
+    caller: CurrentCallerDep,
+    preferences: PreferencesDep,
+    profile: ProfileDep,
+    key: str,
 ) -> Response:
-    """Tombstone one field."""
+    """Forget one field, as the caller's erasure setting says."""
     persona = await container.persona_service.get(caller.account_id, profile)
     await container.fields.forget(
         caller.account_id,
@@ -526,6 +549,7 @@ async def forget_field(
         key,
         source=Source.ASSISTANT,
         asserted_by=caller.audience,
+        erasure=preferences.erasure,
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -550,7 +574,7 @@ async def forget_field(
 async def list_notes(  # noqa: PLR0913, PLR0917 -- one parameter per documented filter
     container: ContainerDep,
     caller: CurrentCallerDep,
-    profile: str,
+    profile: ProfileDep,
     limit: LimitQuery,
     cursor: CursorQuery = None,
     q: Annotated[str | None, Query(description="Full-text search within this persona.")] = None,
@@ -616,7 +640,7 @@ async def write_note(
     container: ContainerDep,
     caller: CurrentCallerDep,
     preferences: PreferencesDep,
-    profile: str,
+    profile: ProfileDep,
     request: WriteNoteRequest,
 ) -> NoteResponse:
     """Record one note."""
@@ -653,7 +677,7 @@ async def write_note(
 async def get_note(
     container: ContainerDep,
     caller: CurrentCallerDep,
-    profile: str,
+    profile: ProfileDep,
     note_id: str,
     include_forgotten: IncludeForgottenQuery = False,
 ) -> NoteResponse:
@@ -684,7 +708,7 @@ async def revise_note(  # noqa: PLR0913, PLR0917
     container: ContainerDep,
     caller: CurrentCallerDep,
     preferences: PreferencesDep,
-    profile: str,
+    profile: ProfileDep,
     note_id: str,
     request: ReviseNoteRequest,
 ) -> NoteResponse:
@@ -702,6 +726,7 @@ async def revise_note(  # noqa: PLR0913, PLR0917
         source=request.source,
         asserted_by=caller.audience,
         max_pinned=preferences.max_pinned_notes,
+        log_values=preferences.log_values,
     )
     return render_note(note)
 
@@ -711,17 +736,20 @@ async def revise_note(  # noqa: PLR0913, PLR0917
     operation_id="forget_note",
     summary="Forget a note",
     description=(
-        "A SOFT forget: the note stops appearing in reads and in search, and comes back "
-        "with include_forgotten=true. Reversible on purpose. To remove a note "
-        "permanently you would have to delete the whole persona, which is deliberate."
+        f"{_FORGETTING} A forgotten note cannot be revised back; there is no way for you "
+        "to destroy one sooner than the person's setting does, which is deliberate."
     ),
     status_code=status.HTTP_204_NO_CONTENT,
     responses={**_UNAUTHORIZED, **_NOT_FOUND},
 )
 async def forget_note(
-    container: ContainerDep, caller: CurrentCallerDep, profile: str, note_id: str
+    container: ContainerDep,
+    caller: CurrentCallerDep,
+    preferences: PreferencesDep,
+    profile: ProfileDep,
+    note_id: str,
 ) -> Response:
-    """Tombstone one note."""
+    """Forget one note, as the caller's erasure setting says."""
     persona = await container.persona_service.get(caller.account_id, profile)
     await container.notes.forget(
         caller.account_id,
@@ -729,6 +757,7 @@ async def forget_note(
         note_id,
         source=Source.ASSISTANT,
         asserted_by=caller.audience,
+        erasure=preferences.erasure,
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -755,7 +784,7 @@ async def forget_note(
 async def recall(
     container: ContainerDep,
     caller: CurrentCallerDep,
-    profile: str,
+    profile: ProfileDep,
     q: Annotated[str, Query(description="What to search for. Needs at least one word.")],
     limit: LimitQuery,
 ) -> RecallResponse:
@@ -813,7 +842,7 @@ async def recall_everywhere(
 async def export_persona(  # noqa: PLR0913, PLR0917 -- two independent cursors, by design
     container: ContainerDep,
     caller: CurrentCallerDep,
-    profile: str,
+    profile: ProfileDep,
     limit: LimitQuery,
     field_cursor: CursorQuery = None,
     note_cursor: CursorQuery = None,
@@ -847,10 +876,11 @@ async def export_persona(  # noqa: PLR0913, PLR0917 -- two independent cursors, 
     summary="Read what changed and when",
     description=(
         "The change log for this persona, newest first: what was set, revised or "
-        "forgotten, by whom, and when. It NEVER carries a field value or a note body -- "
-        "only the key or the id -- because it is the one thing here that cannot be "
-        "forgotten. Ordered by insertion rather than timestamp, so entries written in "
-        "the same instant still have an order."
+        "forgotten, by whom, and when. By default it carries no field value and no note "
+        "body -- only the key or the id. If the person turned persona.log_values on, a "
+        "change that replaced a value or a body carries what it replaced in old_value, "
+        "until that field or note is destroyed. Ordered by insertion rather than "
+        "timestamp, so entries written in the same instant still have an order."
     ),
     response_model=EventListResponse,
     responses={**_UNAUTHORIZED, **_NOT_FOUND, **_REFUSED},
@@ -858,7 +888,7 @@ async def export_persona(  # noqa: PLR0913, PLR0917 -- two independent cursors, 
 async def read_persona_events(
     container: ContainerDep,
     caller: CurrentCallerDep,
-    profile: str,
+    profile: ProfileDep,
     limit: LimitQuery,
     cursor: CursorQuery = None,
 ) -> EventListResponse:

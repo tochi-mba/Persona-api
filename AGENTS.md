@@ -49,10 +49,11 @@ in a shell chain masks the exit code, which is how a broken commit slips through
 src/persona_api/
   core/      config, clock, logging, request context, version, preferences, and the composition root
   domain/    pure types and rules: Persona, Field, Note, Source, key normalization,
-             value limits, credential refusal. Imports nothing internal.
+             value limits, credential refusal, the erasure policy. Imports nothing internal.
   storage/   the SQLite connection, the migrations, and how a datetime becomes a column
   events/    the append-only record of persona changes
-  memory/    FieldStore, NoteStore, the FTS index, recall, filters, cursor pagination
+  memory/    FieldStore, NoteStore, the FTS index, recall, filters, cursor pagination,
+             and the Sweeper that destroys forgotten rows whose grace period ended
   personas/  PersonaStore and PersonaService -- the identity card and the cascade
   auth/      token verification: a thin adapter over the family's keyring_client. The only
              package that knows keyring exists
@@ -135,6 +136,16 @@ deliberately and say why in the commit message -- do not work around it.
 14. **Field keys are normalized, not rejected.** `"Favourite Topics"`, `"favourite-topics"`
     and `"FAVOURITE_TOPICS"` are one field. Key sprawl is fought by making reuse easy --
     required descriptions, a cheap `/schema` endpoint -- and never by refusing a write.
+15. **Erasure is decided when something is forgotten, and written on the row.** A forget
+    reads the person's `persona.erasure_mode` once and records the answer as `purge_after`
+    (or destroys the row there and then). Nothing ever re-reads the setting and applies it
+    to rows already forgotten -- that is what makes a change of mind non-retroactive, and
+    what lets the sweeper run without anybody's token.
+    [ADR-0009](docs/adr/0009-erasure-and-the-default-persona.md)
+16. **Whatever destroys a row strips the values logged about it, in the same transaction,
+    and then truncates the write-ahead log.** With `log_values` on, the event log holds
+    copies; a destroy that left them would make "destroyed" untrue.
+    `tests/unit/memory/test_erasure.py` scans the file and its `-wal` for a sentinel.
 
 ## How we work: TDD
 
@@ -221,7 +232,11 @@ already; what they lack is your reasoning.
 - [ ] Anything reading or writing a persona has an **isolation test** proving another
       account gets a 404 identical to the one a nonexistent persona gets.
 - [ ] Anything that writes records an event, and the event contains no field value and no
-      note body -- only the key or the id.
+      note body -- only the key or the id -- except `old_value`, which only the person's
+      own `persona.log_values` fills, and which anything that destroys the row strips.
+- [ ] A new `{profile}` route takes the profile through `ProfileDep`, so `@default` works
+      on it; and anything new a person may choose leaves behaviour exactly as it was for
+      somebody who has not chosen.
 - [ ] Anything that stores caller text goes through `looks_like_a_credential` first.
 - [ ] Anything that touches a write path keeps the FTS index in the same transaction, and
       the index-integrity test covers the new path.

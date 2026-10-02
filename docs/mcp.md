@@ -75,14 +75,14 @@ time a model calls it for a bad reason".
 | `list_fields`, `get_field`, `list_notes`, `get_note` | The ordinary reads. |
 | `recall`, `recall_everywhere` | Search. The other main read. |
 | `set_field`, `write_note`, `revise_note` | The writes. `set_field` is `PUT`, so a retried call cannot make two fields. |
-| `forget_field`, `forget_note` | Soft forget. Safe: reversible with `?include_forgotten=true`. |
+| `forget_field`, `forget_note` | Safe for a model to call **because what they do is the person's choice, not the model's**: unless the person set `persona.erasure_mode`, forgetting is reversible with `?include_forgotten=true`. If they chose `immediate`, a forget is a hard delete they asked for; if `grace`, it is reversible until `purge_after`. Keep the route's description in the tool so the model knows which. |
 | `export_persona` | Everything, one call. Bounded by the same cursor as every list. |
-| `read_persona_events` | What changed and when. Contains no value and no body. |
+| `read_persona_events` | What changed and when. Contains no value and no body unless the person turned `persona.log_values` on; then `old_value` is what a change replaced, and is a recorded claim like any field. |
 
 | Expose with care | Why |
 | --- | --- |
 | `create_persona`, `update_persona` | Harmless but easy to call by accident; a model that gets a 404 from `get_persona` will reach for `create_persona` immediately. Fine — just cap it, and remember the per-account cap exists. |
-| `delete_persona` | **The only hard delete, and it cascades.** If you expose it, require a confirmation turn. A model that deletes a persona has deleted everything the assistant knew about somebody, and there is no undo and no operator who can get it back — [ADR-0003](adr/0003-no-administrative-surface.md). |
+| `delete_persona` | **A hard delete whatever the person's erasure setting, and it cascades.** If you expose it, require a confirmation turn. A model that deletes a persona has deleted everything the assistant knew about somebody, and there is no undo and no operator who can get it back — [ADR-0003](adr/0003-no-administrative-surface.md). |
 
 There is nothing on a "never expose" list, and that is a direct consequence of
 [ADR-0003](adr/0003-no-administrative-surface.md): there is no administrative surface to

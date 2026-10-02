@@ -31,6 +31,15 @@ Never by a caller that counts first. A count taken before a write goes stale bet
 two, and two concurrent writes both pass it. There is an ``asyncio.gather`` test per cap
 that would find it if that ever stopped being true.
 
+## Forgetting does what the person chose
+
+:meth:`FieldStore.forget` takes an :class:`~persona_api.domain.erasure.ErasurePolicy` and
+writes its answer on the row: nothing for a tombstone, a ``purge_after`` instant for a
+grace period, or the row's destruction inside the same transaction for ``immediate``.
+:meth:`FieldStore.purge_due` is the sweeper's half. Both strip the values the event log
+kept about the row and drop its words from the search index, in the transaction that
+destroys it, so neither ``log_values`` nor the index can leave a copy behind.
+
 ## set() is idempotent, and knows when nothing changed
 
 The key is in the path, so create-and-update are one operation -- a model retrying a call
@@ -45,6 +54,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from persona_api.domain.cursors import decode_cursor, encode_cursor
+from persona_api.domain.erasure import TOMBSTONE
 from persona_api.domain.errors import FieldNotFoundError, LimitExceededError
 from persona_api.domain.fields import (
     Field,
@@ -61,13 +71,16 @@ from persona_api.domain.secrets import refuse_if_credential
 from persona_api.events.log import EventAction
 from persona_api.memory.pagination import Page
 from persona_api.memory.search import to_match_query
+from persona_api.storage.database import drop_deleted_terms
 from persona_api.storage.times import from_column, from_column_optional, to_column
 
 if TYPE_CHECKING:
     import sqlite3
+    from collections.abc import Sequence
     from datetime import datetime
 
     from persona_api.core.clock import Clock
+    from persona_api.domain.erasure import ErasurePolicy
     from persona_api.domain.fields import ValueLimits
     from persona_api.events.log import EventLog
     from persona_api.memory.filters import FieldFilters
@@ -75,7 +88,7 @@ if TYPE_CHECKING:
 
 COLUMNS = (
     "account_id, profile, key, field_id, seq, description, value_json, value_type, "
-    "source, asserted_by, pinned, revision, created_at, updated_at, forgotten_at"
+    "source, asserted_by, pinned, revision, created_at, updated_at, forgotten_at, purge_after"
 )
 
 
@@ -144,12 +157,16 @@ class FieldStore:
         asserted_by: str,
         pinned: bool | None = None,
         max_pinned: int | None = None,
+        log_values: bool = False,
     ) -> Field:
         """Create or replace one field. Idempotent on the key.
 
         ``max_pinned`` is this write's pin ceiling. When omitted the constructor value
         stands, so existing callers keep working; when passed it wins for this write, so
         two concurrent requests for two accounts can have different ceilings.
+
+        ``log_values`` is the writer's ``persona.log_values``: when on, a write that
+        replaces the value records the value it replaced in the event log.
 
         Raises:
             CredentialRefusedError: if the value or the description looks like a
@@ -172,14 +189,22 @@ class FieldStore:
         searchable = f"{normalized} {described} {flatten_value(value)}"
         pinned_cap = self._max_pinned if max_pinned is None else max_pinned
 
-        def write(connection: sqlite3.Connection) -> Field:
+        def write(connection: sqlite3.Connection) -> tuple[Field, bool]:
             existing = connection.execute(
                 f"SELECT {COLUMNS} FROM fields WHERE account_id = ? AND profile = ? AND key = ?",  # noqa: S608
                 (account_id, profile, normalized),
             ).fetchone()
 
+            destroyed = existing is not None and _past_due(existing, now)
+            if destroyed:
+                # Its grace period has ended and only the sweep's timing has kept it. It
+                # is destroyed here rather than revived, so the value and history the
+                # person chose to have gone cannot come back through a write.
+                self._destroy(connection, [(account_id, profile, normalized)])
+                existing = None
+
             if existing is None:
-                return self._insert(
+                inserted = self._insert(
                     connection,
                     account_id=account_id,
                     profile=profile,
@@ -194,8 +219,9 @@ class FieldStore:
                     searchable=searchable,
                     max_pinned=pinned_cap,
                 )
+                return inserted, destroyed
 
-            return self._revise(
+            revised = self._revise(
                 connection,
                 existing=existing,
                 description=described,
@@ -207,9 +233,17 @@ class FieldStore:
                 now=now,
                 searchable=searchable,
                 max_pinned=pinned_cap,
+                log_values=log_values,
             )
+            return revised, False
 
-        return await self._db.transact(write)
+        field, destroyed = await self._db.transact(write)
+        if destroyed:
+            # As after any destruction: the old row's pages are still in the write-ahead
+            # log until it is truncated, and the sweep that would have done it now finds
+            # nothing to destroy and so never checkpoints.
+            await self._db.checkpoint_truncate()
+        return field
 
     async def get(
         self, account_id: str, profile: str, key: str, *, include_forgotten: bool = False
@@ -311,10 +345,21 @@ class FieldStore:
         )
         return [_field_of(row) for row in rows]
 
-    async def forget(
-        self, account_id: str, profile: str, key: str, *, source: Source, asserted_by: str
+    # PLR0913: the row, who is forgetting it, and what their erasure setting says.
+    async def forget(  # noqa: PLR0913
+        self,
+        account_id: str,
+        profile: str,
+        key: str,
+        *,
+        source: Source,
+        asserted_by: str,
+        erasure: ErasurePolicy = TOMBSTONE,
     ) -> None:
-        """Tombstone one field. Reversible with ``include_forgotten``.
+        """Forget one field, as ``erasure`` says: keep it, schedule it, or destroy it.
+
+        The default is a tombstone, reversible with ``include_forgotten``, which is what
+        forgetting did before it was anybody's choice.
 
         Raises:
             FieldNotFoundError: no live field by that key in this persona. Identical to
@@ -322,12 +367,20 @@ class FieldStore:
         """
         normalized = normalize_key(key)
         now = self._clock.now()
+        purge_after = erasure.purge_after(now)
 
         def write(connection: sqlite3.Connection) -> None:
             forgotten = connection.execute(
-                "UPDATE fields SET forgotten_at = ?, updated_at = ? "
+                "UPDATE fields SET forgotten_at = ?, updated_at = ?, purge_after = ? "
                 "WHERE account_id = ? AND profile = ? AND key = ? AND forgotten_at IS NULL",
-                (to_column(now), to_column(now), account_id, profile, normalized),
+                (
+                    to_column(now),
+                    to_column(now),
+                    None if purge_after is None else to_column(purge_after),
+                    account_id,
+                    profile,
+                    normalized,
+                ),
             ).rowcount
             if not forgotten:
                 msg = "no field by that key"
@@ -343,11 +396,43 @@ class FieldStore:
                 account_id=account_id,
                 profile=profile,
                 subject=normalized,
+                detail=erasure.describe(now),
                 source=source,
                 asserted_by=asserted_by,
             )
+            if erasure.destroys_now:
+                self._destroy(connection, [(account_id, profile, normalized)])
 
         await self._db.transact(write)
+        if erasure.destroys_now:
+            # After the commit, because a checkpoint cannot run inside a transaction.
+            # This is what takes the bytes out of the write-ahead log as well.
+            await self._db.checkpoint_truncate()
+
+    async def purge_due(self, *, now: datetime, limit: int) -> int:
+        """Destroy up to ``limit`` forgotten fields whose ``purge_after`` has passed.
+
+        The sweeper's half of a grace period. Oldest-due first, in one transaction, and
+        bounded so one sweep cannot hold the single database thread for an unbounded
+        stretch; whatever is left goes on the next one. Returns how many went, and never
+        anything about them -- the caller logs a count.
+
+        Across every account, which is right here and nowhere else: the row already says
+        when it may go, so there is nobody's setting to look up and nothing to scope by.
+        """
+
+        def write(connection: sqlite3.Connection) -> int:
+            due = connection.execute(
+                "SELECT account_id, profile, key FROM fields "
+                "WHERE purge_after IS NOT NULL AND purge_after <= ? "
+                "ORDER BY purge_after LIMIT ?",
+                (to_column(now), limit),
+            ).fetchall()
+            return self._destroy(
+                connection, [(row["account_id"], row["profile"], row["key"]) for row in due]
+            )
+
+        return await self._db.transact(write)
 
     async def count(self, account_id: str, profile: str, *, include_forgotten: bool = False) -> int:
         """How many fields this persona holds."""
@@ -358,6 +443,32 @@ class FieldStore:
         )
 
     # -- writing ------------------------------------------------------------------------
+
+    def _destroy(
+        self, connection: sqlite3.Connection, targets: Sequence[tuple[str, str, str]]
+    ) -> int:
+        """Destroy fields, by ``(account_id, profile, key)``, in the caller's transaction.
+
+        Three halves together: the row, the values the event log kept about it, and its
+        words in the search index. Between two transactions there would be a moment where
+        the field is gone and its old value is still sitting in the event that recorded the
+        change. The full-text row goes through the delete trigger, as it does for a persona
+        delete, but a deleted document's words stay in the index until it is rewritten --
+        see :func:`~persona_api.storage.database.drop_deleted_terms` -- which happens once
+        for the whole batch. The caller truncates the write-ahead log after the commit.
+        Returns how many went.
+        """
+        for account_id, profile, key in targets:
+            connection.execute(
+                "DELETE FROM fields WHERE account_id = ? AND profile = ? AND key = ?",
+                (account_id, profile, key),
+            )
+            self._events.strip_values(
+                connection, account_id=account_id, profile=profile, noun="field", subjects=(key,)
+            )
+        if targets:
+            drop_deleted_terms(connection, "fields_fts")
+        return len(targets)
 
     def _insert(  # noqa: PLR0913
         self,
@@ -384,7 +495,7 @@ class FieldStore:
 
         connection.execute(
             f"INSERT INTO fields ({COLUMNS}) "  # noqa: S608
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 account_id,
                 profile,
@@ -400,6 +511,7 @@ class FieldStore:
                 1,
                 to_column(now),
                 to_column(now),
+                None,
                 None,
             ),
         )
@@ -435,6 +547,7 @@ class FieldStore:
         now: datetime,
         searchable: str,
         max_pinned: int,
+        log_values: bool,
     ) -> Field:
         account_id = existing["account_id"]
         profile = existing["profile"]
@@ -466,10 +579,12 @@ class FieldStore:
                 max_pinned=max_pinned,
             )
 
+        # Reviving clears purge_after with forgotten_at: a field set again inside its grace
+        # period is a field somebody wants, and the sweeper must not destroy it later.
         connection.execute(
             "UPDATE fields SET description = ?, value_json = ?, value_type = ?, source = ?,"
             " asserted_by = ?, pinned = ?, revision = revision + 1, updated_at = ?,"
-            " forgotten_at = NULL"
+            " forgotten_at = NULL, purge_after = NULL"
             " WHERE account_id = ? AND profile = ? AND key = ?",
             (
                 description,
@@ -495,6 +610,13 @@ class FieldStore:
             detail=f"revision {existing['revision'] + 1}",
             source=source,
             asserted_by=asserted_by,
+            # Only the value, and only when it changed: a pin or a description edit has
+            # replaced nothing the person asked to have kept.
+            old_value=(
+                existing["value_json"]
+                if log_values and existing["value_json"] != value_json
+                else None
+            ),
         )
         return _field_of(
             connection.execute(
@@ -556,6 +678,12 @@ class FieldStore:
             ")",
             (account_id, profile, key),
         )
+
+
+def _past_due(row: sqlite3.Row, now: datetime) -> bool:
+    """Whether a forgotten row's grace period has already ended."""
+    due: str | None = row["purge_after"]
+    return due is not None and due <= to_column(now)
 
 
 def _next_seq(connection: sqlite3.Connection, name: str) -> int:
@@ -629,4 +757,5 @@ def _field_of(row: sqlite3.Row) -> Field:
         created_at=from_column(row["created_at"]),
         updated_at=from_column(row["updated_at"]),
         forgotten_at=from_column_optional(row["forgotten_at"]),
+        purge_after=from_column_optional(row["purge_after"]),
     )

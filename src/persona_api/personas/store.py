@@ -10,10 +10,11 @@ assistant might want to remember about itself is a field or a note, because thos
 without a migration and this does not. A summary is read on every turn, so its size is a
 prompt cost rather than a storage one.
 
-**Delete is the only hard delete in the service**, and it cascades: fields and notes go
-through the foreign key, and their full-text rows go through the triggers the migration
-installs. The event log does not go, because deleting a persona must not delete the
-record that it was deleted.
+**Delete is the one hard delete nobody has to opt into**, and it cascades: fields and
+notes go through the foreign key, and their full-text rows go through the triggers the
+migration installs. The event log does not go, because deleting a persona must not delete
+the record that it was deleted -- but any values it kept under ``persona.log_values`` do,
+in the same transaction, because they are copies of what was just destroyed.
 """
 
 from __future__ import annotations
@@ -22,12 +23,14 @@ from typing import TYPE_CHECKING
 
 from persona_api.domain.errors import LimitExceededError, PersonaExistsError
 from persona_api.domain.personas import Persona
+from persona_api.storage.database import drop_deleted_terms
 from persona_api.storage.times import from_column, to_column
 
 if TYPE_CHECKING:
     import sqlite3
     from datetime import datetime
 
+    from persona_api.events.log import EventLog
     from persona_api.storage.database import Database
 
 COLUMNS = "account_id, profile, persona_id, display_name, pronouns, summary, created_at, updated_at"
@@ -36,8 +39,9 @@ COLUMNS = "account_id, profile, persona_id, display_name, pronouns, summary, cre
 class PersonaStore:
     """The identity cards, one per ``(account_id, profile)``."""
 
-    def __init__(self, *, database: Database) -> None:
+    def __init__(self, *, database: Database, events: EventLog) -> None:
         self._db = database
+        self._events = events
 
     async def add(self, persona: Persona, *, cap: int) -> None:
         """Store a new persona, refusing to take the account past ``cap``.
@@ -148,12 +152,28 @@ class PersonaStore:
 
         The fields and notes go through the foreign key, and their full-text rows go
         through the triggers -- not through a hand-ordered sequence of deletes with a
-        documented lesser harm if it failed partway.
+        documented lesser harm if it failed partway. The values the event log kept about
+        them are stripped, and their words dropped from both search indexes, in the same
+        transaction; the write-ahead log is truncated afterwards. Otherwise what was deleted
+        would still be on disk beside the database.
         """
-        removed = await self._db.execute(
-            "DELETE FROM personas WHERE account_id = ? AND profile = ?", (account_id, profile)
-        )
-        return removed > 0
+
+        def write(connection: sqlite3.Connection) -> bool:
+            removed = connection.execute(
+                "DELETE FROM personas WHERE account_id = ? AND profile = ?", (account_id, profile)
+            ).rowcount
+            if removed:
+                self._events.strip_persona_values(
+                    connection, account_id=account_id, profile=profile
+                )
+                drop_deleted_terms(connection, "fields_fts")
+                drop_deleted_terms(connection, "notes_fts")
+            return bool(removed)
+
+        removed = await self._db.transact(write)
+        if removed:
+            await self._db.checkpoint_truncate()
+        return removed
 
     async def count_for_account(self, account_id: str) -> int:
         """How many personas this account owns, for the per-account cap."""

@@ -188,9 +188,34 @@ profile-scoped recall default is tested through the real `HttpSettingsClient` ov
 `httpx.MockTransport` that answers per profile as settings-api does, because the shared
 fake ignores `profile` and could not tell a request that sent it from one that did not.
 
-`default_persona`, `log_values`, `erasure_mode` and `grace_days` are unread on purpose:
-this service has no default-persona resolution and no sweeper, and faking either would
-be a setting that stores a value and changes nothing.
+`default_persona`, `log_values`, `erasure_mode` and `grace_days` are each tested from both
+sides: what a person who chose them gets, and -- named in its own test -- that a person who
+chose nothing, or a deployment without settings-api, gets exactly what persona-api did
+before they existed. A value of the wrong shape is treated as unchosen and logged by key.
+
+## Erasure
+
+`tests/unit/memory/test_erasure.py` covers each mode at the store: a tombstone kept however
+far the clock moves, a grace period that ends at its instant and not a second before, a
+field revived inside its window that the sweep then leaves alone, an immediate erasure that
+is gone before the call returns, and the two directions of "never retroactive". The sweep
+query is shown to be bounded and oldest-first, and each account waits out its own window.
+
+Five tests there are about the **file rather than the code**: they write a sentinel, destroy
+it -- by an immediate erasure, a sweep, a write to a field whose grace period has ended, and
+a persona delete -- and scan the database and its `-wal` for the text and for the word the
+full-text index holds. `secure_delete`, the index rewrite and the truncating checkpoint are
+each needed for them to pass, and no unit test of a query could stand in for them.
+
+Logged values are checked from the same angles: off by default, kept only for a change that
+replaced a value or a body, and stripped -- in the destroying transaction -- by the sweeper,
+an immediate erasure and a persona delete, without touching a note that shares a subject
+string with a field. `tests/unit/memory/test_sweeper.py` drives the sweeper on an injected
+clock; the container tests check that a failing sweep does not end the task, that it
+sweeps before it first waits, and that closing cancels it before the database goes.
+`tests/integration/test_erasure.py` repeats the important cases over HTTP, including
+`@default` on every route, its loud failure during an outage, and the order in which it
+asks settings-api for the default and then for that persona's own settings.
 
 ## What is deliberately not tested
 

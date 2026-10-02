@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import gc
 import threading
 import warnings
@@ -62,6 +63,68 @@ class TestWiring:
             assert container.preferences is source
         finally:
             await container.aclose()
+
+
+class _SweeperThatFails:
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    async def sweep_once(self) -> int:
+        self.attempts += 1
+        msg = "the disk is having a bad day"
+        raise RuntimeError(msg)
+
+
+class _SweeperThatCounts:
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    async def sweep_once(self) -> int:
+        self.attempts += 1
+        return 0
+
+
+class TestTheSweeper:
+    async def test_a_sweep_that_raises_does_not_end_the_sweeping(self, tmp_path: Path) -> None:
+        """The bug, named: one failed sweep stopped every later erasure, with nothing saying so."""
+        container = Container.build(settings_for(tmp_path), clock=FakeClock())
+        failing = _SweeperThatFails()
+        container.sweeper = failing  # type: ignore[assignment]
+        try:
+            await container.sweep_guarded()
+            await container.sweep_guarded()
+        finally:
+            await container.aclose()
+
+        assert failing.attempts == 2
+
+    async def test_it_sweeps_before_it_first_waits(self, tmp_path: Path) -> None:
+        # The other order leaves rows whose grace ran out while the service was stopped
+        # waiting a whole further interval after it came back.
+        container = Container.build(settings_for(tmp_path), clock=FakeClock())
+        counting = _SweeperThatCounts()
+        container.sweeper = counting  # type: ignore[assignment]
+        try:
+            container.start_sweeper()
+            for _ in range(20):
+                await asyncio.sleep(0)
+                if counting.attempts:
+                    break
+        finally:
+            await container.aclose()
+
+        assert counting.attempts == 1
+
+    async def test_closing_stops_it_before_the_database_goes(self, tmp_path: Path) -> None:
+        container = Container.build(settings_for(tmp_path), clock=FakeClock())
+        container.start_sweeper()
+        sweeping = container._sweeping
+
+        await container.aclose()
+
+        assert sweeping is not None
+        assert sweeping.cancelled()
+        assert container._sweeping is None
 
 
 class TestARefusedBuildLeaksNothing:

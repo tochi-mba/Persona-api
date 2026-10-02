@@ -93,9 +93,14 @@ keyring anything about an account — including whether a profile exists. See
 Set `PERSONA_SETTINGS_API_BASE_URL` and `PERSONA_SETTINGS_API_TOKEN` together and each
 request reads its caller's `persona` namespace from
 [settings-api](https://github.com/tochi-mba/Settings-api): a person may lower their own
-default page size and pin caps, never raise them above this deployment. Unset, which is the
-default, every person gets this deployment's configuration.
-[docs/operations.md](docs/operations.md#settings-api) has the details.
+default page size and pin caps, never raise them above this deployment; choose what
+forgetting does (`erasure_mode`: keep it, destroy it after `grace_days`, or destroy it at
+once); have the change log keep what a change replaced (`log_values`); and name a default
+persona that `@default` stands for in any path. Unset, which is the default, every person
+gets this deployment's configuration -- and forgetting keeps the row, the log keeps no
+values, and `@default` names nothing, exactly as before.
+[docs/operations.md](docs/operations.md#settings-api) has the details, and
+[ADR-0009](docs/adr/0009-erasure-and-the-default-persona.md) the reasoning.
 
 ## The shape of the API
 

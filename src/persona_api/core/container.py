@@ -10,15 +10,18 @@ surface, so there is no role store, no audit log of privileged actions, no break
 actor and no permission resolver to wire. What is left is three stores, an event log, a
 JWKS client and a verifier.
 
-There is also **no background sweeper**. keyring has one because sessions, grants and
-rate-limit records expire; nothing here does. A forgotten field is a tombstone somebody
-may still ask for, and the event log is trimmed inside the transaction that writes it --
-so there is nothing for a periodic task to collect, and no task whose silent death would
-let something grow.
+There is **one background task**: the sweeper, which destroys forgotten rows whose grace
+period has run out. Only somebody who chose ``persona.erasure_mode = grace`` ever has such
+a row, so for everybody else it finds nothing. It sweeps before it first waits, and a
+sweep that fails is logged and retried on the next tick rather than ending the task -- a
+sweeper that died quietly would be a broken promise that looks exactly like a working
+service. The event log is still trimmed inside the transaction that writes it, not here.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -31,6 +34,7 @@ from persona_api.domain.fields import ValueLimits
 from persona_api.events.sql_log import SqlEventLog
 from persona_api.memory.fields import FieldStore
 from persona_api.memory.notes import NoteStore
+from persona_api.memory.sweeper import Sweeper
 from persona_api.personas.service import PersonaService
 from persona_api.personas.store import PersonaStore
 from persona_api.storage.database import Database
@@ -63,7 +67,9 @@ class Container:
     jwks: JwksClient
     verifier: TokenVerifier
     preferences: PreferenceSource
+    sweeper: Sweeper
     started_monotonic: float
+    _sweeping: asyncio.Task[None] | None = None
 
     @classmethod
     def build(
@@ -90,7 +96,7 @@ class Container:
             migrate(database, now=clock.now())
 
             events = SqlEventLog(database=database, clock=clock, max_entries=settings.max_events)
-            personas = PersonaStore(database=database)
+            personas = PersonaStore(database=database, events=events)
             fields = FieldStore(
                 database=database,
                 clock=clock,
@@ -153,6 +159,7 @@ class Container:
                     clock=clock,
                 ),
                 preferences=chosen,
+                sweeper=Sweeper(database=database, fields=fields, notes=notes, clock=clock),
                 started_monotonic=clock.monotonic(),
             )
         except BaseException:
@@ -163,8 +170,36 @@ class Container:
     def uptime_seconds(self) -> float:
         return self.clock.monotonic() - self.started_monotonic
 
+    def start_sweeper(self) -> None:
+        """Begin destroying forgotten rows whose grace period has run out."""
+        self._sweeping = asyncio.create_task(self._sweep_forever(), name="erasure-sweeper")
+
+    async def _sweep_forever(self) -> None:
+        """Sweep, then wait, rather than wait, then sweep.
+
+        The other order has a gap nobody would guess at from outside: rows whose grace ran
+        out while the service was stopped would wait a further whole interval after it came
+        back, because the first thing the loop did was sleep.
+        """
+        while True:
+            await self.sweep_guarded()
+            await asyncio.sleep(self.settings.purge_interval_seconds)
+
+    async def sweep_guarded(self) -> None:
+        """Run one sweep, surviving any failure, so the next tick can try again."""
+        try:
+            await self.sweeper.sweep_once()
+        except Exception:
+            logger.exception("sweep_failed")
+
     async def aclose(self) -> None:
         """Shut everything down in dependency order."""
+        if self._sweeping is not None:
+            # First: a sweep mid-flight is a database write, and the database closes last.
+            self._sweeping.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._sweeping
+            self._sweeping = None
         try:
             await self.preferences.aclose()
             await self.jwks.aclose()
