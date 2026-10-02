@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from persona_api.storage.migrator import MIGRATIONS_DIR
+from persona_api.storage.migrator import MIGRATIONS_DIR, discover
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -47,7 +47,8 @@ def schema() -> Iterator[sqlite3.Connection]:
     connection = sqlite3.connect(":memory:")
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
-    connection.executescript((MIGRATIONS_DIR / "0001_initial.sql").read_text())
+    for migration in discover():
+        connection.executescript(migration.path.read_text())
     try:
         yield connection
     finally:
@@ -186,6 +187,8 @@ class TestTheLiveQueryPlans:
         assert "SCAN" not in chosen, chosen
 
     def test_reading_the_event_log_is_a_seek(self, schema: sqlite3.Connection) -> None:
+        # Also the guard on events_holding_values: a partial index sharing this prefix
+        # must not be picked for the log read, which has no old_value condition.
         chosen = plan(
             schema,
             "SELECT * FROM events WHERE account_id=? AND profile=? ORDER BY sequence DESC LIMIT 50",
@@ -195,6 +198,37 @@ class TestTheLiveQueryPlans:
 
         assert "events_by_persona" in chosen, chosen
         assert "TEMP B-TREE" not in chosen, chosen
+
+    @pytest.mark.parametrize(("table", "index"), [("fields", "fields_due"), ("notes", "notes_due")])
+    def test_the_sweep_reads_only_what_is_waiting(
+        self, schema: sqlite3.Connection, table: str, index: str
+    ) -> None:
+        # The sweep runs across every account, so a scan here would be a scan of every
+        # row anybody ever wrote, once an hour, to find the handful that are due.
+        chosen = plan(
+            schema,
+            f"SELECT * FROM {table} WHERE purge_after IS NOT NULL AND purge_after <= ? "  # noqa: S608
+            "ORDER BY purge_after LIMIT 500",
+            STAMP,
+        )
+
+        assert index in chosen, chosen
+        assert "TEMP B-TREE" not in chosen, chosen
+
+    def test_stripping_logged_values_reads_only_events_that_hold_one(
+        self, schema: sqlite3.Connection
+    ) -> None:
+        chosen = plan(
+            schema,
+            "UPDATE events SET old_value = NULL WHERE account_id = ? AND profile = ?"
+            " AND subject = ? AND action LIKE ? AND old_value IS NOT NULL",
+            "a",
+            "work",
+            "voice",
+            "field.%",
+        )
+
+        assert "events_holding_values" in chosen, chosen
 
 
 class TestTheIncludeForgottenPath:
