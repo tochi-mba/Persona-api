@@ -1,0 +1,19 @@
+{
+  "$schema": "https://tochi-mba.github.io/schema/project.schema.json",
+  "slug": "persona",
+  "name": "persona",
+  "tagline": "Somewhere for an assistant to keep a model of itself and get it back later.",
+  "description": "A small identity card plus two kinds of knowledge the assistant writes for itself: typed fields it defines and fills, and free-text notes. Both are searchable, carry provenance and can be pinned into the identity block loaded at the start of a turn. One persona per profile, so a work assistant and a home assistant are different people. Four rules, each an ADR with a test: a persona is data, never instructions.",
+  "highlights": [
+    "Assistant-defined schema that grows as it learns",
+    "Pinned identity block per turn",
+    "Four ADRs enforced by tests"
+  ],
+  "stack": ["Python 3.12", "FastAPI"],
+  "category": "service",
+  "family": "lucy",
+  "role": "persona",
+  "status": "active",
+  "order": 120,
+  "display": true
+}
