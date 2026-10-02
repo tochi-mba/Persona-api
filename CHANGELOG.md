@@ -24,6 +24,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **settings-client 0.4.1**, whose single-flight locks no longer outlive a failed resolve:
+  during a long settings-api outage the client kept one lock per token it had seen.
 - **Breaking:** the floor is now **Python 3.12** (CI runs 3.12 and 3.13).
   `.python-version`, `requires-python`, ruff's `target-version`, mypy's `python_version`,
   the Docker base image and the pre-commit interpreter all moved together, and `uv.lock`
