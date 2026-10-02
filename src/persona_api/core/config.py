@@ -173,16 +173,25 @@ class Settings(BaseSettings):
     A request above it is refused with a 422 rather than silently handed a shorter page.
     """
 
+    # -- Erasure -----------------------------------------------------------------------
+    purge_interval_seconds: PositiveFloat = 3_600.0
+    """How often the sweeper destroys forgotten rows whose grace period has run out.
+
+    Only somebody who chose ``persona.erasure_mode = grace`` in settings-api ever has
+    such a row; for everybody else a sweep finds nothing. A grace period therefore ends
+    up to one interval late, never early.
+    """
+
     # -- Per-person settings -----------------------------------------------------------
     settings_api_base_url: str | None = None
     """Where settings-api is. Unset, every person gets this configuration as it stands.
 
-    Set, each request reads its owner's ``persona`` settings: the default recall page and
-    how many fields and notes they pin into the prompt. The ceilings in this configuration
-    still apply on top of what anybody chooses -- a person may narrow a cap and never raise
-    it. ``default_persona``, ``log_values``, ``erasure_mode`` and ``grace_days`` exist in
-    the catalogue and do nothing here until this service grows a default-persona rule and
-    a sweeper.
+    Set, each request reads its owner's ``persona`` settings: the default recall page, how
+    many fields and notes they pin into the prompt, which persona ``@default`` names, what
+    forgetting does (``erasure_mode``, ``grace_days``) and whether the event log keeps old
+    values (``log_values``). The ceilings in this configuration still apply on top of what
+    anybody chooses -- a person may narrow a cap and never raise it. Unset, forgetting is
+    a tombstone, the log keeps no values and ``@default`` names nothing, as before.
     """
 
     settings_api_token: ServiceToken = None

@@ -90,9 +90,9 @@ def normalize_body(raw: str, *, limit: int) -> str:
 class Note:
     """One free-text memory.
 
-    ``forgotten_at`` is a tombstone rather than a deletion. Forgetting is reversible
-    here -- a note stops appearing in reads and comes back with
-    ``include_forgotten=true`` -- because an assistant deciding on its own that a memory
+    ``forgotten_at`` marks it forgotten rather than deleting it. Unless the person chose
+    otherwise -- see :mod:`persona_api.domain.erasure` -- a forgotten note comes back with
+    ``include_forgotten=true``, because an assistant deciding on its own that a memory
     is stale should not be able to destroy it.
 
     ``revision`` counts edits to the body. It exists so that a caller holding a stale
@@ -111,3 +111,5 @@ class Note:
     created_at: datetime
     updated_at: datetime
     forgotten_at: datetime | None
+    purge_after: datetime | None = None
+    """When this forgotten note is destroyed. ``None`` while it is live, and for a tombstone."""

@@ -17,6 +17,7 @@ from persona_api.storage.database import (
     SIDECARS,
     Database,
     StorageError,
+    drop_deleted_terms,
     make_private,
     require_foreign_keys,
 )
@@ -151,6 +152,14 @@ class TestPragmas:
         assert row is not None
         assert row[0] == "wal"
 
+    async def test_deleted_bytes_are_overwritten_rather_than_unlinked(self, db: Database) -> None:
+        # Without secure_delete a DELETE only unlinks the cell, and what a person asked to
+        # have destroyed stays in the page's free space until something overwrites it.
+        row = await db.fetch_one("PRAGMA secure_delete")
+
+        assert row is not None
+        assert row[0] == 1
+
     async def test_synchronous_is_normal_rather_than_full(self, db: Database) -> None:
         # The one pragma that differs from keyring's. A lost commit there is a
         # credential somebody believes is saved; here it is a forgotten note, and the
@@ -160,6 +169,53 @@ class TestPragmas:
 
         assert row is not None
         assert row[0] == 1
+
+
+class TestTheTruncatingCheckpoint:
+    async def test_it_empties_the_write_ahead_log_and_leaves_the_connection_writable(
+        self, db: Database
+    ) -> None:
+        """The bug, named: a checkpoint's unread cursor made every later COMMIT fail."""
+        await db.execute("CREATE TABLE t (a TEXT)")
+        await db.execute("INSERT INTO t (a) VALUES ('x')")
+        wal = db.path.with_name(db.path.name + "-wal")
+
+        await db.checkpoint_truncate()
+
+        assert not wal.exists() or wal.stat().st_size == 0
+        await db.execute("INSERT INTO t (a) VALUES ('y')")
+        assert await db.count("SELECT count(*) AS total FROM t") == 2
+
+
+class TestDroppingDeletedTerms:
+    async def test_a_deleted_documents_words_leave_the_index_and_the_rest_stay(
+        self, db: Database
+    ) -> None:
+        """The bug, named: an FTS5 delete left the document's words in the index's segments.
+
+        A delete writes a marker and leaves the terms where they were until a merge reaches
+        them, so the words of something destroyed were still in the file.
+        """
+        await db.execute("CREATE VIRTUAL TABLE fields_fts USING fts5(text)")
+        for rowid in range(20):
+            await db.execute(
+                "INSERT INTO fields_fts (rowid, text) VALUES (?, ?)", (rowid, f"neighbour {rowid}")
+            )
+        await db.execute("INSERT INTO fields_fts (rowid, text) VALUES (99, 'quokkaword')")
+        await db.execute("DELETE FROM fields_fts WHERE rowid = 99")
+        await db.checkpoint_truncate()
+        assert b"quokkaword" in db.path.read_bytes(), "a plain delete keeps the word"
+
+        await db.transact(lambda connection: drop_deleted_terms(connection, "fields_fts"))
+        await db.checkpoint_truncate()
+
+        assert b"quokkaword" not in db.path.read_bytes()
+        assert (
+            await db.count(
+                "SELECT count(*) AS total FROM fields_fts WHERE fields_fts MATCH 'neighbour'"
+            )
+            == 20
+        )
 
 
 class TestTransactions:

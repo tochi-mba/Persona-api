@@ -114,7 +114,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 def start(app: FastAPI) -> Container:
-    """Wire the application's dependencies.
+    """Wire the application's dependencies and begin the erasure sweep.
 
     Deliberately does not contact keyring. The first token that needs a verifying key, or
     the first health check, is what provokes the first fetch -- a persona service that will
@@ -124,6 +124,7 @@ def start(app: FastAPI) -> Container:
     factory = cast("Callable[[Settings], Container]", app.state.container_factory)
     container = factory(app.state.settings)
     app.state.container = container
+    container.start_sweeper()
 
     logger.info("service_started", environment=container.settings.environment)
     return container

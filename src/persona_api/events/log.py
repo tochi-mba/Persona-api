@@ -4,15 +4,20 @@ An append-only record, readable only by the account that owns the persona it des
 Four decisions shape it, and three of them are inherited from keyring's audit log for
 reasons that turn out to apply here too.
 
-## It never holds a field value or a note body
+## It holds a value only when the person asked it to
 
-Only the key or the note id, plus a short human-readable ``detail``. An event log is read
-more often, by more tools, and kept for longer than the rows it describes -- and the rows
-it describes are a person's own words about themselves. "field.revised voice" is enough
-to answer what changed; putting the old and new value in would make this table a second,
-permanent, un-forgettable copy of the persona that ``forget`` cannot reach.
+By default only the key or the note id, plus a short human-readable ``detail``. An event
+log is read more often, by more tools, and kept for longer than the rows it describes --
+and the rows it describes are a person's own words about themselves. "field.revised
+voice" is enough to answer what changed; putting the old value in would make this table a
+second copy of the persona.
 
-That is also why it is safe for this to be the one table with no tombstones.
+A person may turn ``persona.log_values`` on, and then a change that replaces a field's
+value or a note's body keeps what it replaced, in ``old_value``. That copy is honoured
+exactly as far as the row's own erasure is: whatever destroys a row -- the sweeper, an
+``immediate`` erasure, deleting the persona -- strips ``old_value`` from every event about
+it **in the same transaction**, through :meth:`EventLog.strip_values` and
+:meth:`EventLog.strip_persona_values`. ``detail`` never holds a value either way.
 
 ## No foreign keys, on purpose
 
@@ -45,12 +50,13 @@ inside one.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     import sqlite3
+    from collections.abc import Sequence
     from datetime import datetime
 
     from persona_api.domain.provenance import Source
@@ -112,6 +118,13 @@ class Event:
     asserted_by: str
     """The ``aud`` of the verified token that made the change. Server-derived."""
 
+    old_value: str | None = field(default=None, repr=False)
+    """What the change replaced, as JSON -- only when the person had ``log_values`` on.
+
+    ``repr=False`` because this is the one attribute that can hold what somebody said, and
+    a repr ends up in test output, in a debugger, and in an exception's context.
+    """
+
 
 @runtime_checkable
 class EventLog(Protocol):
@@ -135,12 +148,43 @@ class EventLog(Protocol):
         detail: str = "",
         source: Source,
         asserted_by: str,
+        old_value: str | None = None,
     ) -> Event:
         """Record a change inside the caller's own transaction.
 
         Synchronous, and takes the connection, precisely so that a store can call it
         between its own statements: the change and its event then commit together or
         not at all.
+
+        ``old_value`` is JSON, and is passed **only** when the person has ``log_values``
+        on. The caller decides, because the caller is the one holding the preferences;
+        this records what it is given.
+        """
+        ...
+
+    def strip_values(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        account_id: str,
+        profile: str,
+        noun: str,
+        subjects: Sequence[str],
+    ) -> None:
+        """Remove the recorded values from every event about some rows, keeping the events.
+
+        Called by whatever destroys those rows, in its transaction. ``noun`` is ``field``
+        or ``note``, because a field key and a note id share the ``subject`` column and
+        stripping one must not reach the other.
+        """
+        ...
+
+    def strip_persona_values(
+        self, connection: sqlite3.Connection, *, account_id: str, profile: str
+    ) -> None:
+        """Remove the recorded values from every event about one persona.
+
+        For deleting the persona, which destroys every row the values were copied from.
         """
         ...
 

@@ -16,3 +16,4 @@ each one is an invariant in [AGENTS.md](../../AGENTS.md) and at least one test.
 | [0006](0006-keyword-search.md) | Keyword search, not embeddings |
 | [0007](0007-local-jwks-verification.md) | Verify keyring's tokens locally, not by asking keyring |
 | [0008](0008-sqlite.md) | SQLite, one file, and why `synchronous` differs from keyring's |
+| [0009](0009-erasure-and-the-default-persona.md) | Erasure is the person's choice, written on the row; `@default` names their default persona |

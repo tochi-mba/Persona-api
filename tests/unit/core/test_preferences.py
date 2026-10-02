@@ -23,6 +23,13 @@ from persona_api.core.preferences import (
     build_preference_source,
     deployment_preferences,
 )
+from persona_api.domain.erasure import (
+    DEFAULT_GRACE_DAYS,
+    MAX_GRACE_DAYS,
+    TOMBSTONE,
+    ErasureMode,
+    ErasurePolicy,
+)
 from persona_api.domain.errors import PreferencesUnavailableError
 
 USER_TOKEN = "a-user-token-from-keyring"
@@ -132,6 +139,85 @@ class TestAPersonsChoices:
         assert client.resolves == 0
 
 
+class TestTheSettingsThatChangeWhatHappens:
+    """``default_persona``, ``erasure_mode``, ``grace_days`` and ``log_values``."""
+
+    async def test_nobody_who_chose_nothing_gets_anything_new(self) -> None:
+        """The bug, named: a person who chose nothing had their forgetting or logging changed."""
+        client = FakeSettingsClient()
+        client.seed("persona", {})
+
+        preferences = await reading(client).for_token(USER_TOKEN)
+
+        assert preferences.default_persona is None
+        assert preferences.erasure == TOMBSTONE
+        assert preferences.log_values is False
+
+    async def test_without_settings_api_forgetting_is_a_tombstone_and_nothing_is_logged(
+        self,
+    ) -> None:
+        preferences = deployment_preferences(settings_with())
+
+        assert preferences.default_persona is None
+        assert preferences.erasure == TOMBSTONE
+        assert preferences.log_values is False
+
+    async def test_a_persons_choices_arrive_as_they_made_them(self) -> None:
+        client = FakeSettingsClient()
+        client.seed(
+            "persona",
+            {
+                "default_persona": "Home",
+                "erasure_mode": "grace",
+                "grace_days": 7,
+                "log_values": True,
+            },
+        )
+
+        preferences = await reading(client).for_token(USER_TOKEN)
+
+        assert preferences.default_persona == "home", "in the form a path is stored in"
+        assert preferences.erasure == ErasurePolicy(ErasureMode.GRACE, grace_days=7)
+        assert preferences.log_values is True
+
+    @pytest.mark.parametrize("days", [0, MAX_GRACE_DAYS])
+    async def test_the_grace_bounds_are_the_catalogues(self, days: int) -> None:
+        client = FakeSettingsClient()
+        client.seed("persona", {"erasure_mode": "grace", "grace_days": days})
+
+        preferences = await reading(client).for_token(USER_TOKEN)
+
+        assert preferences.erasure.grace_days == days
+
+    @pytest.mark.parametrize("mode", [ErasureMode.IMMEDIATE, ErasureMode.TOMBSTONE])
+    async def test_a_mode_with_no_schedule_ignores_the_grace_period(
+        self, mode: ErasureMode
+    ) -> None:
+        client = FakeSettingsClient()
+        client.seed("persona", {"erasure_mode": mode.value, "grace_days": "nonsense"})
+
+        preferences = await reading(client).for_token(USER_TOKEN)
+
+        assert preferences.erasure == ErasurePolicy(mode=mode)
+
+    async def test_an_outage_with_fallbacks_lands_on_what_the_catalogue_calls_safe(
+        self,
+    ) -> None:
+        fallbacks = {
+            "default_persona": Fallback(default=None, on_unavailable=OnUnavailable.USE_DEFAULT),
+            "erasure_mode": Fallback(default="tombstone", on_unavailable=OnUnavailable.USE_DEFAULT),
+            "log_values": Fallback(default=False, on_unavailable=OnUnavailable.USE_DEFAULT),
+        }
+        client = FakeSettingsClient(fallbacks={"persona": fallbacks})
+        client.unavailable = True
+
+        preferences = await reading(client).for_token(USER_TOKEN)
+
+        assert preferences.default_persona is None, "an outage must not load *a* persona"
+        assert preferences.erasure == TOMBSTONE
+        assert preferences.log_values is False
+
+
 class TestWhenSettingsApiCannotBeReached:
     async def test_never_having_answered_leaves_the_configuration(self) -> None:
         client = FakeSettingsClient()
@@ -209,6 +295,43 @@ class TestValuesThatCannotBeUsed:
         )
 
         assert preferences == deployment_preferences(settings)
+
+    @pytest.mark.parametrize("value", ["-bad-", "@default", "", 7, True])
+    async def test_an_unusable_default_persona_names_none(self, value: Any) -> None:
+        client = FakeSettingsClient()
+        client.seed("persona", {"default_persona": value})
+
+        preferences = await reading(client).for_token(USER_TOKEN)
+
+        assert preferences.default_persona is None
+
+    @pytest.mark.parametrize("value", ["shred", 1, True, ["grace"]])
+    async def test_an_unusable_erasure_mode_is_a_tombstone(self, value: Any) -> None:
+        client = FakeSettingsClient()
+        client.seed("persona", {"erasure_mode": value, "grace_days": 1})
+
+        preferences = await reading(client).for_token(USER_TOKEN)
+
+        assert preferences.erasure == TOMBSTONE
+
+    @pytest.mark.parametrize("value", [None, -1, MAX_GRACE_DAYS + 1, True, "7"])
+    async def test_an_unusable_grace_period_is_the_catalogue_default(self, value: Any) -> None:
+        # The person did choose destruction; it is the schedule settings-api got wrong.
+        client = FakeSettingsClient()
+        client.seed("persona", {"erasure_mode": "grace", "grace_days": value})
+
+        preferences = await reading(client).for_token(USER_TOKEN)
+
+        assert preferences.erasure == ErasurePolicy(ErasureMode.GRACE, DEFAULT_GRACE_DAYS)
+
+    @pytest.mark.parametrize("value", ["true", 1, None])
+    async def test_an_unusable_log_setting_keeps_no_values(self, value: Any) -> None:
+        client = FakeSettingsClient()
+        client.seed("persona", {"log_values": value})
+
+        preferences = await reading(client).for_token(USER_TOKEN)
+
+        assert preferences.log_values is False
 
     async def test_the_key_is_logged_and_the_value_never_is(
         self, capsys: pytest.CaptureFixture[str]

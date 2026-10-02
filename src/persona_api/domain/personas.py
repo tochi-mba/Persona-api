@@ -40,6 +40,16 @@ The card exists to be small enough to always send. Anything that wants a paragra
 wants to be a note.
 """
 
+DEFAULT_PERSONA_SEGMENT = "@default"
+"""The path segment that means "whichever persona this person made their default".
+
+Reserved by construction rather than by a list: ``@`` is outside the profile pattern below,
+so no persona can ever be called this and no existing path changes meaning. With no
+``persona.default_persona`` chosen it is refused exactly as any other unstorable profile
+name is -- which is what "no default, a caller must name one" has always meant here. See
+``docs/adr/0009-erasure-and-the-default-persona.md``.
+"""
+
 _PROFILE = re.compile(r"^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$")
 """Lowercase, no leading or trailing punctuation, never only dots.
 

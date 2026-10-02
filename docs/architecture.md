@@ -106,7 +106,11 @@ revision bump above it depends on.
 
 The differences from keyring are in [ADR-0008](adr/0008-sqlite.md): `synchronous = NORMAL`
 rather than `FULL`, and an `fts_sequence` table that hands out full-text docids rather than
-borrowing the implicit rowid.
+borrowing the implicit rowid. Two more came with erasure
+([ADR-0009](adr/0009-erasure-and-the-default-persona.md)): `secure_delete = ON`, so a
+destroyed row's bytes are overwritten rather than unlinked; `drop_deleted_terms()`, which
+rewrites a full-text index without a destroyed row's words, inside the destroying
+transaction; and `checkpoint_truncate()`, which empties the write-ahead log after it.
 
 ### `events/` — what changed, and when
 
@@ -117,8 +121,11 @@ purpose: deleting a persona must not delete the record that it was deleted.
 Ordered by `sequence`, not by `at`. The clock is injectable and two events recorded in one
 tick share a timestamp, so "newest first" has to be insertion order to be an order at all.
 
-**An event never contains a field value or a note body** — only the key or the id. An event
-log is read by more people, and kept for longer, than the rows it describes.
+**An event contains no field value and no note body** — only the key or the id — unless
+the person turned `persona.log_values` on, in which case a change that replaced a value or
+a body keeps it in `old_value`. Whatever destroys a row strips those copies in the same
+transaction (`strip_values`, `strip_persona_values`), so the log is never a second copy of
+something somebody asked to have destroyed.
 
 ### `memory/` — the half the service exists for
 
@@ -134,7 +141,13 @@ SQL. The one exception is deleting a persona: its fields and notes go by
 `ON DELETE CASCADE`, which has no application code path to hook, so two `AFTER DELETE`
 triggers remove their index rows. The explicit helpers create their own bug class, which
 is why index integrity gets its own test module, asserting that the table and the index
-agree after create, revise, forget and persona delete.
+agree after create, revise, forget, purge, immediate erasure and persona delete.
+
+**Forgetting does what the person chose.** `forget()` takes an `ErasurePolicy` and writes
+its answer on the row — nothing for a tombstone, `purge_after` for a grace period, or the
+row's destruction in the same transaction for `immediate`. `purge_due()` and the
+`Sweeper` destroy what is due, a bounded batch at a time, and need no token because the
+decision was written down while one was in hand.
 
 **Query sanitisation is mandatory.** FTS5 `MATCH` has its own syntax and raw user input
 hits it: measured on this stack, eight of ten plausible search strings are a 500.
