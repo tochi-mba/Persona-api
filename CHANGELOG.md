@@ -106,6 +106,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **settings-client 0.4.2.** A 2xx answer the client cannot use -- a proxy's page, an empty
+  body, a document from a newer settings-api -- is treated as an outage and degrades as one,
+  instead of reaching this service as a 500.
 - **settings-client 0.2.0**, and the profile goes with every read. `persona.recall_default_limit`
   is profile-scoped in settings-api, and 0.1.0 could not name a profile, so every read got the
   catalogue default and a person's own recall default was never applied. Requests under
